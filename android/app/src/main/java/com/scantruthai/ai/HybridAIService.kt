@@ -13,14 +13,14 @@ object HybridAIService {
     // Stage 2: Strictly On-Device Privacy Gate (Gemini Nano via AICore)
     private val privacyGateModel = Firebase.ai(backend = GenerativeBackend.googleAI())
         .generativeModel(
-            modelName = "gemini-3.8-flash",
+            modelName = "gemini-3.5-flash-lite",
             onDeviceConfig = OnDeviceConfig(mode = InferenceMode.ONLY_ON_DEVICE)
         )
 
     // Stage 3: Cloud Medical Profile & Typed Health Note Extractor
     private val profileExtractorModel = Firebase.ai(backend = GenerativeBackend.googleAI())
         .generativeModel(
-            modelName = "gemini-3.8-flash",
+            modelName = "gemini-3.5-flash-lite",
             onDeviceConfig = OnDeviceConfig(mode = InferenceMode.ONLY_IN_CLOUD),
             generationConfig = generationConfig {
                 responseMimeType = "application/json"
@@ -40,7 +40,7 @@ object HybridAIService {
     // Stage 4: Hybrid Ingredient Analyzer ("auto" | "flash" | "nano")
     fun getIngredientAnalyzerModel(mode: String = "auto") =
         Firebase.ai(backend = GenerativeBackend.googleAI()).generativeModel(
-            modelName = "gemini-3.8-flash",
+            modelName = "gemini-3.5-flash-lite",
             onDeviceConfig = OnDeviceConfig(
                 mode = when (mode) {
                     "nano" -> InferenceMode.ONLY_ON_DEVICE

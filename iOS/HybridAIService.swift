@@ -25,7 +25,7 @@ final class HybridAIService {
 
     // Stage 3: Cloud Medical Profile & Typed Health Note Extractor
     func extractMedicalContext(sanitizedText: String, sourceLabel: String = "Uploaded medical report") async throws -> String {
-        let cloudModel = ai.geminiModel(name: "gemini-3.8-flash")
+        let cloudModel = ai.geminiModel(name: "gemini-3.5-flash-lite")
         let session = ai.generativeModelSession(model: cloudModel)
 
         let prompt = """
@@ -52,7 +52,7 @@ final class HybridAIService {
         medicalProfileJson: String,
         mode: String = "auto"
     ) async throws -> (json: String, modelUsedLabel: String) {
-        let cloudModel = ai.geminiModel(name: "gemini-3.8-flash")
+        let cloudModel = ai.geminiModel(name: "gemini-3.5-flash-lite")
         let systemModel = FirebaseAI.SystemLanguageModel.default
 
         let selectedModel: GenerativeModel
@@ -81,7 +81,7 @@ final class HybridAIService {
         let response = try await session.respond(to: prompt)
         let label = response.inferenceSource == .onDevice
             ? "Apple Foundation Models (On-Device)"
-            : "Gemini 3.8 Flash"
+            : "Gemini 3.5 Flash Lite"
         return (cleanJson(response.text), label)
     }
 
