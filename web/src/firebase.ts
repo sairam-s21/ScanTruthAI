@@ -6,17 +6,8 @@ import {
   persistentLocalCache,
   persistentMultipleTabManager,
 } from "firebase/firestore";
-import {
-  initializeAppCheck,
-  ReCaptchaEnterpriseProvider,
-} from "firebase/app-check";
-import {
-  getAI,
-  getGenerativeModel,
-  GoogleAIBackend,
-  InferenceMode,
-  Schema,
-} from "firebase/ai";
+import { initializeAppCheck, ReCaptchaEnterpriseProvider } from "firebase/app-check";
+import { getAI, getGenerativeModel, GoogleAIBackend, InferenceMode, Schema } from "firebase/ai";
 
 // ── TypeScript Interfaces Aligned to Figma UI ─────────────────────────────
 
@@ -92,19 +83,21 @@ const firebaseConfig = {
 
 export const app = initializeApp(firebaseConfig);
 
-// ── 2. App Check (Required for Firebase AI Logic) ─────────────────────────
+// ── 2. App Check (Conditional for development / missing site key) ────────
 
-if (import.meta.env.DEV) {
+if (typeof window !== "undefined" && import.meta.env.DEV) {
   (self as unknown as Record<string, unknown>).FIREBASE_APPCHECK_DEBUG_TOKEN =
     import.meta.env.VITE_APPCHECK_DEBUG_TOKEN || true;
 }
 
-export const appCheck = initializeAppCheck(app, {
-  provider: new ReCaptchaEnterpriseProvider(
-    import.meta.env.VITE_RECAPTCHA_SITE_KEY
-  ),
-  isTokenAutoRefreshEnabled: true,
-});
+const recaptchaSiteKey = import.meta.env.VITE_RECAPTCHA_SITE_KEY;
+export const appCheck =
+  typeof window !== "undefined" && recaptchaSiteKey
+    ? initializeAppCheck(app, {
+        provider: new ReCaptchaEnterpriseProvider(recaptchaSiteKey),
+        isTokenAutoRefreshEnabled: true,
+      })
+    : null;
 
 // ── 3. Auth & Offline-First Firestore ─────────────────────────────────────
 
@@ -144,35 +137,53 @@ const medicalProfileSchema = Schema.object({
 
 const ingredientAnalysisSchema = Schema.object({
   properties: {
-    productName: Schema.string(),
-    productCategory: Schema.string(),
-    safetyScore: Schema.integer(),
-    badgeLabel: Schema.string(),
-    headline: Schema.string(),
-    aiSummary: Schema.string(),
+    productName: Schema.string({
+      description: "Concise product or primary ingredient name (e.g., 'Whey Protein Powder', 'Oat Drink')",
+    }),
+    productCategory: Schema.string({
+      description: "Category: 'food', 'supplement', 'beverage', or 'medicine'",
+    }),
+    safetyScore: Schema.integer({
+      description:
+        "Safety score 0-100 evaluated against user medical profile. 0-39 for avoid/allergic/intolerant conflicts, 40-69 for caution, 70-100 for safe.",
+    }),
+    badgeLabel: Schema.string({
+      description: "Verdict badge: 'Good match for you', 'Use with care', or 'Avoid'",
+    }),
+    headline: Schema.string({
+      description: "Assessment headline summarizing the result for the user's specific health condition.",
+    }),
+    aiSummary: Schema.string({
+      description:
+        "Detailed clinical summary (2-3 sentences) explaining how these ingredients interact with user conditions or allergies.",
+    }),
     healthFactors: Schema.array({
       items: Schema.object({
         properties: {
-          title: Schema.string(),
-          description: Schema.string(),
-          impactBadge: Schema.string(),
-          sentiment: Schema.string(),
+          title: Schema.string({ description: "Condition or risk factor title" }),
+          description: Schema.string({
+            description: "Detailed medical rationale for the user",
+          }),
+          impactBadge: Schema.string({ description: "Short badge: 'Avoid', 'Caution', or 'Safe'" }),
+          sentiment: Schema.string({ description: "'warning', 'positive', or 'neutral'" }),
         },
       }),
     }),
     ingredientBreakdown: Schema.array({
       items: Schema.object({
         properties: {
-          name: Schema.string(),
-          note: Schema.string(),
-          status: Schema.string(),
+          name: Schema.string({ description: "Ingredient name" }),
+          note: Schema.string({
+            description: "Clinical explanation of safety or health impact for user",
+          }),
+          status: Schema.string({ description: "'Avoid', 'Caution', 'Okay', or 'Great'" }),
         },
       }),
     }),
     recommendedIntake: Schema.object({
       properties: {
-        dosageHeadline: Schema.string(),
-        guidance: Schema.string(),
+        dosageHeadline: Schema.string({ description: "Serving guidance headline" }),
+        guidance: Schema.string({ description: "Serving guidance details and health advice" }),
       },
     }),
   },
@@ -202,10 +213,20 @@ export const getProfileExtractorModel = () =>
     },
   });
 
+// Stage 1.5: Intelligent OCR Ingredient Classifier (Separates ingredients from manufacturer & package details)
+export const getIngredientClassifierModel = () =>
+  getGenerativeModel(ai, {
+    mode: InferenceMode.ONLY_IN_CLOUD,
+    inCloudParams: {
+      model: "gemini-3.5-flash-lite",
+      generationConfig: {
+        responseMimeType: "application/json",
+      },
+    },
+  });
+
 // Stage 4: Hybrid Ingredient Analyzer (Supports 'auto' | 'flash' | 'nano')
-export const getIngredientAnalyzerModel = (
-  mode: "auto" | "flash" | "nano" = "auto"
-) => {
+export const getIngredientAnalyzerModel = (mode: "auto" | "flash" | "nano" = "auto") => {
   if (mode === "nano") {
     return getGenerativeModel(ai, {
       mode: InferenceMode.ONLY_ON_DEVICE,
@@ -218,10 +239,7 @@ export const getIngredientAnalyzerModel = (
   }
 
   return getGenerativeModel(ai, {
-    mode:
-      mode === "flash"
-        ? InferenceMode.ONLY_IN_CLOUD
-        : InferenceMode.PREFER_IN_CLOUD,
+    mode: mode === "flash" ? InferenceMode.ONLY_IN_CLOUD : InferenceMode.PREFER_IN_CLOUD,
     inCloudParams: {
       model: "gemini-3.5-flash-lite",
       generationConfig: {

@@ -13,11 +13,7 @@ import {
   Timestamp,
   arrayUnion,
 } from "firebase/firestore";
-import {
-  db,
-  ExtractedMedicalProfile,
-  IngredientAnalysisResult,
-} from "../firebase";
+import { db, ExtractedMedicalProfile, IngredientAnalysisResult } from "./firebase";
 
 export interface StoredMedicalReport {
   id: string;
@@ -39,7 +35,7 @@ export interface StoredScanRecord extends IngredientAnalysisResult {
 
 export function subscribeToMedicalProfile(
   uid: string,
-  callback: (profile: ExtractedMedicalProfile | null) => void
+  callback: (profile: ExtractedMedicalProfile | null) => void,
 ) {
   const ref = doc(db, "users", uid, "medicalProfile", "current");
   return onSnapshot(ref, (snap) => {
@@ -49,12 +45,9 @@ export function subscribeToMedicalProfile(
 
 export function subscribeToMedicalReports(
   uid: string,
-  callback: (reports: StoredMedicalReport[]) => void
+  callback: (reports: StoredMedicalReport[]) => void,
 ) {
-  const q = query(
-    collection(db, "users", uid, "medicalReports"),
-    orderBy("uploadedAt", "desc")
-  );
+  const q = query(collection(db, "users", uid, "medicalReports"), orderBy("uploadedAt", "desc"));
   return onSnapshot(q, (snap) => {
     const items = snap.docs.map((d) => ({
       id: d.id,
@@ -67,12 +60,12 @@ export function subscribeToMedicalReports(
 export function subscribeToScanHistory(
   uid: string,
   callback: (scans: StoredScanRecord[]) => void,
-  maxItems = 20
+  maxItems = 20,
 ) {
   const q = query(
     collection(db, "users", uid, "scanHistory"),
     orderBy("scannedAt", "desc"),
-    limit(maxItems)
+    limit(maxItems),
   );
   return onSnapshot(q, (snap) => {
     const items = snap.docs.map((d) => ({
@@ -88,7 +81,7 @@ export function subscribeToScanHistory(
 export async function saveMedicalReportAndMergeProfile(
   uid: string,
   extracted: ExtractedMedicalProfile,
-  redactedText: string
+  redactedText: string,
 ) {
   const profileRef = doc(db, "users", uid, "medicalProfile", "current");
   await setDoc(
@@ -97,12 +90,8 @@ export async function saveMedicalReportAndMergeProfile(
       ...(extracted.healthMarkers?.length
         ? { healthMarkers: arrayUnion(...extracted.healthMarkers) }
         : {}),
-      ...(extracted.conditions?.length
-        ? { conditions: arrayUnion(...extracted.conditions) }
-        : {}),
-      ...(extracted.allergies?.length
-        ? { allergies: arrayUnion(...extracted.allergies) }
-        : {}),
+      ...(extracted.conditions?.length ? { conditions: arrayUnion(...extracted.conditions) } : {}),
+      ...(extracted.allergies?.length ? { allergies: arrayUnion(...extracted.allergies) } : {}),
       ...(extracted.medications?.length
         ? { medications: arrayUnion(...extracted.medications) }
         : {}),
@@ -111,7 +100,7 @@ export async function saveMedicalReportAndMergeProfile(
         : {}),
       updatedAt: serverTimestamp(),
     },
-    { merge: true }
+    { merge: true },
   );
 
   await addDoc(collection(db, "users", uid, "medicalReports"), {
@@ -126,12 +115,11 @@ export async function saveMedicalReportAndMergeProfile(
 export async function saveTypedHealthNoteAndMergeProfile(
   uid: string,
   rawNote: string,
-  extracted: ExtractedMedicalProfile
+  extracted: ExtractedMedicalProfile,
 ) {
   await addDoc(collection(db, "users", uid, "healthNotes"), {
     userNote: rawNote,
-    extractedSummary:
-      extracted.conditions?.join(", ") || extracted.reportTitle || rawNote,
+    extractedSummary: extracted.conditions?.join(", ") || extracted.reportTitle || rawNote,
     createdAt: serverTimestamp(),
   });
 
@@ -142,12 +130,8 @@ export async function saveTypedHealthNoteAndMergeProfile(
       ...(extracted.healthMarkers?.length
         ? { healthMarkers: arrayUnion(...extracted.healthMarkers) }
         : {}),
-      ...(extracted.conditions?.length
-        ? { conditions: arrayUnion(...extracted.conditions) }
-        : {}),
-      ...(extracted.allergies?.length
-        ? { allergies: arrayUnion(...extracted.allergies) }
-        : {}),
+      ...(extracted.conditions?.length ? { conditions: arrayUnion(...extracted.conditions) } : {}),
+      ...(extracted.allergies?.length ? { allergies: arrayUnion(...extracted.allergies) } : {}),
       ...(extracted.medications?.length
         ? { medications: arrayUnion(...extracted.medications) }
         : {}),
@@ -156,7 +140,7 @@ export async function saveTypedHealthNoteAndMergeProfile(
         : {}),
       updatedAt: serverTimestamp(),
     },
-    { merge: true }
+    { merge: true },
   );
 }
 
@@ -164,7 +148,7 @@ export async function saveScanResult(
   uid: string,
   analysis: IngredientAnalysisResult,
   rawIngredients: string[],
-  modelUsed: string
+  modelUsed: string,
 ) {
   const docRef = await addDoc(collection(db, "users", uid, "scanHistory"), {
     ...analysis,
