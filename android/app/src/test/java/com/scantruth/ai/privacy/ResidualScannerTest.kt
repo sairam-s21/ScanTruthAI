@@ -1,0 +1,100 @@
+package com.scantruth.ai.privacy
+
+import com.scantruth.ai.model.AlertSeverity
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * The approval gate: a high-risk identifier that survived masking must stop the cloud
+ * call, while clinical numbers and reference ranges must not.
+ */
+class ResidualScannerTest {
+
+    @Test
+    fun `unmasked email is high risk`() {
+        val findings = ResidualScanner.scan("Write to jane.doe@example.com for reports")
+        assertTrue(findings.any { it.severity == AlertSeverity.HIGH })
+    }
+
+    @Test
+    fun `unmasked phone length number is high risk`() {
+        val findings = ResidualScanner.scan("Call 9876543210 for the report")
+        assertTrue(findings.any { it.severity == AlertSeverity.HIGH })
+    }
+
+    @Test
+    fun `unmasked labelled patient id is high risk`() {
+        val findings = ResidualScanner.scan("Patient ID: 4471\nHemoglobin 13.2 g/dL")
+        assertTrue(findings.any { it.severity == AlertSeverity.HIGH })
+    }
+
+    @Test
+    fun `clinical values and reference ranges are not high risk`() {
+        val findings = ResidualScanner.scan(
+            "Hemoglobin 10.8 g/dL (13-17)\nWBC 6400 /uL (4000-11000)\nPlatelets 150000"
+        )
+        assertTrue(findings.none { it.severity == AlertSeverity.HIGH })
+    }
+
+    @Test
+    fun `clinical report is safe to approve`() {
+        val outcome = PrivacyMasker.mask(
+            "Hemoglobin 10.8 g/dL (13-17)\nWBC 6400 /uL (4000-11000)\nPlatelets 150000"
+        ) as MaskOutcome.Masked
+
+        assertTrue(outcome.document.isSafeToApprove)
+    }
+
+    @Test
+    fun `medium hints do not block approval`() {
+        val outcome = PrivacyMasker.mask(
+            "Collected on 12/03/2025\nHemoglobin 13.2 g/dL"
+        ) as MaskOutcome.Masked
+
+        assertTrue(outcome.document.alerts.any { it.severity == AlertSeverity.MEDIUM })
+        assertTrue(outcome.document.isSafeToApprove)
+    }
+
+    @Test
+    fun `a high risk residual blocks approval instead of dead ending the review`() {
+        // A dotted phone number is rejected by the phone rule, so it survives masking.
+        val outcome = PrivacyMasker.mask(
+            "Phone: 98.76.54.3210\nHemoglobin 13.2 g/dL"
+        ) as MaskOutcome.Masked
+
+        // The document is still returned so the reviewer can add the missed value,
+        // but approval is refused.
+        assertTrue(outcome.document.redactedText.contains("Hemoglobin"))
+        assertFalse(outcome.document.isSafeToApprove)
+    }
+
+    @Test
+    fun `a capitalised name after by is flagged for manual review`() {
+        val findings = ResidualScanner.scan(
+            "Reviewed by Suresh Patil\nHaemoglobin 13.2 g/dL"
+        )
+
+        assertTrue(findings.any { it.title.contains("unlabelled name", ignoreCase = true) })
+        assertTrue(findings.none { it.severity == AlertSeverity.HIGH })
+    }
+
+    @Test
+    fun `clinical lines without a person are not flagged as names`() {
+        val findings = ResidualScanner.scan(
+            "Collected by the laboratory at 9 AM\nHaemoglobin 13.2 g/dL"
+        )
+
+        assertTrue(findings.none { it.title.contains("unlabelled name", ignoreCase = true) })
+    }
+
+    @Test
+    fun `findings carry a line number but never the matched value`() {
+        val findings = ResidualScanner.scan("Aadhaar No: 2345 6789 0124\nEmail: a@b.com")
+        val rendered = findings.joinToString { "${it.title} ${it.detail} ${it.lineNumber}" }
+
+        assertFalse(rendered.contains("2345"))
+        assertFalse(rendered.contains("a@b.com"))
+        assertTrue(findings.all { it.lineNumber != null })
+    }
+}

@@ -4,6 +4,8 @@
 !.env.example
 **/google-services.json
 **/GoogleService-Info.plist
+# App Check debug tokens are secrets and must never be committed
+**/firebase-appcheck.json
 
 # ── Web (Vite / Node / TypeScript) ───────────────────────────────────────
 node_modules/
@@ -28,6 +30,14 @@ android/local.properties
 *.apk
 *.aab
 *.ap_
+*.zip
+/app/
+
+# ── Keystore & Release Signing Secrets (Never Commit) ──────────────────────
+*.jks
+*.keystore
+keystore.properties
+**/keystore.properties
 
 # ── iOS (Xcode / Swift Package Manager) ──────────────────────────────────
 iOS/DerivedData/
