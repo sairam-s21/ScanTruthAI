@@ -5,9 +5,17 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!--
+      allowBackup is false on purpose: Firestore already holds the user's health context,
+      and a cloud backup of cached medical material would outlive sign-out on the device.
+    -->
     <application
         android:name=".ScanTruthApp"
-        android:allowBackup="true"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:usesCleartextTraffic="false"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:label="ScanTruthAI"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
