@@ -1,0 +1,74 @@
+# ─────────────────────────────────────────────────────────────
+# Secrets, keys and tokens - never commit these
+# ─────────────────────────────────────────────────────────────
+
+# Firebase client config (contains the API key) and Android equivalent
+**/GoogleService-Info.plist
+**/google-services.json
+
+# Environment files (keep a committed .env.example with placeholder values instead)
+.env
+.env.*
+*.env
+!.env.example
+
+# Firebase / Google Cloud service-account and admin keys
+**/serviceAccount*.json
+**/service-account*.json
+**/*-firebase-adminsdk-*.json
+**/*credentials*.json
+
+# Apple signing: private keys, certificates, provisioning profiles, API keys
+*.p8
+*.p12
+*.pem
+*.key
+*.cer
+*.certSigningRequest
+*.mobileprovision
+*.provisionprofile
+
+# Android signing
+*.jks
+*.keystore
+
+# Local secret config and App Check debug tokens
+Secrets.xcconfig
+**/Secrets*.xcconfig
+*.debugtoken
+**/*debug-token*
+
+# The shared Xcode scheme holds the App Check debug token (FIRAAppCheckDebugToken)
+*.xcodeproj/xcshareddata/xcschemes/
+
+# ─────────────────────────────────────────────────────────────
+# Xcode / macOS / build output
+# ─────────────────────────────────────────────────────────────
+
+# Per-user Xcode state
+xcuserdata/
+*.xcuserstate
+*.xcuserdatad/
+
+# Build products and archives
+DerivedData/
+build/
+*.ipa
+*.xcarchive
+*.dSYM
+*.dSYM.zip
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# Editor backups
+*.bak
+*.orig
+
+# macOS
+.DS_Store
+
+# Firebase CLI local files
+.firebase/
+firebase-debug.log
