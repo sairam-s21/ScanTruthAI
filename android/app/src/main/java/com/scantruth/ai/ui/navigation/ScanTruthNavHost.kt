@@ -76,7 +76,12 @@ fun ScanTruthNavHost(
         }
 
         composable(ScanTruthDestination.PROFILE) {
-            ProfileScreen()
+            ProfileScreen(
+                onClearSession = {
+                    ingredientState.reset()
+                    reportState.clearSensitive()
+                }
+            )
         }
 
         composable(ScanTruthDestination.SCAN_HISTORY) {

@@ -4,15 +4,91 @@ import {
   getProfileExtractorModel,
   getIngredientAnalyzerModel,
   getIngredientClassifierModel,
-  PrivacyGateResult,
-  ExtractedMedicalProfile,
-  IngredientAnalysisResult,
-  IngredientBreakdownItem,
-  HealthMarker,
-  HealthFactor,
-  DetectedPiiItem,
+  type PrivacyGateResult,
+  type ExtractedMedicalProfile,
+  type IngredientAnalysisResult,
+  type IngredientBreakdownItem,
+  type HealthMarker,
+  type DetectedPiiItem,
 } from "./firebase";
 import { cleanAndFilterIngredientsFromText } from "./ocrService";
+import { HEALTH_CATEGORIES, type HealthCategory } from "./health";
+import { PREF_KEYS, readBoolPref } from "./preferences";
+
+export type OnDeviceStatus = "available" | "downloadable" | "downloading" | "unavailable";
+
+/** Chrome's built-in Gemini Nano (Prompt API). Never reports ready unless the browser says so. */
+export async function getOnDeviceStatus(): Promise<OnDeviceStatus> {
+  const lm = (globalThis as unknown as { LanguageModel?: { availability: () => Promise<string> } })
+    .LanguageModel;
+  if (!lm?.availability) return "unavailable";
+  try {
+    const status = await lm.availability();
+    return status === "available" || status === "downloadable" || status === "downloading"
+      ? status
+      : "unavailable";
+  } catch {
+    return "unavailable";
+  }
+}
+
+function cleanJson(raw: string): string {
+  const stripped = raw.replace(/```json|```/g, "").trim();
+  const start = stripped.indexOf("{");
+  const end = stripped.lastIndexOf("}");
+  return start >= 0 && end > start ? stripped.slice(start, end + 1) : stripped;
+}
+
+export interface HealthItemValidation {
+  isValid: boolean;
+  normalizedName?: string;
+  reason?: string;
+}
+
+function parseValidation(raw: string): HealthItemValidation | null {
+  try {
+    const parsed = JSON.parse(cleanJson(raw)) as HealthItemValidation;
+    return typeof parsed?.isValid === "boolean" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Checks that text typed into an "Add …" dialog really is an item of `category`, e.g. rejects
+ * "asdf" or "banana" as a medication. Gemini Nano goes first so nothing leaves the device;
+ * the cloud model is used only when Nano is unavailable or fails. Throws if neither decides.
+ */
+export async function validateHealthItem(
+  text: string,
+  category: HealthCategory,
+): Promise<HealthItemValidation> {
+  const singular = HEALTH_CATEGORIES[category].singular;
+  const prompt = `A user typed the text below into the "${singular}" list of their health profile.
+Decide whether it is a real, recognizable ${singular} (misspellings of real ones are fine) and not gibberish, a random word, or something that belongs in a different list.
+
+Return ONLY valid JSON with keys:
+"isValid" (boolean),
+"normalizedName" (string: properly capitalized and spelled name, keeping any dose such as "500 mg"),
+and "reason" (short string explaining a rejection, empty if valid).
+
+Text: "${text}"`;
+
+  if ((await getOnDeviceStatus()) === "available") {
+    try {
+      const res = await getPrivacyGateModel().generateContent(prompt);
+      const result = parseValidation(res.response.text());
+      if (result) return result;
+    } catch {
+      // Fall through to the cloud model.
+    }
+  }
+
+  const res = await getIngredientClassifierModel().generateContent(prompt);
+  const result = parseValidation(res.response.text());
+  if (!result) throw new Error("The answer could not be understood.");
+  return result;
+}
 
 export interface EnhancedPrivacyGateResult extends PrivacyGateResult {
   usedFallback: boolean;
@@ -138,7 +214,7 @@ function runLocalRegexPrivacyMask(rawText: string): EnhancedPrivacyGateResult {
     detectedItems,
     usedFallback: true,
     notice:
-      "On-device Gemini Nano is not supported in this browser. Switched to Local Rule-Based Privacy Shield and Cloud Gemini Flash for analysis.",
+      "Gemini Nano is unavailable in this browser, so a rule-based filter masked the text on your device.",
   };
 }
 
@@ -833,53 +909,68 @@ For ingredientBreakdown:
 
 For recommendedIntake:
 - Provide "dosageHeadline" and "guidance" tailored to the user's profile.
-
+${preferenceRules()}
 User Health Profile:
 ${healthContext}
 
 Ingredients List:
 ${ingredients.join(", ")}`;
 
+  const run = async (engine: "flash" | "nano") => {
+    const res = await getIngredientAnalyzerModel(engine).generateContent(prompt);
+    const parsed = JSON.parse(cleanJson(res.response.text())) as IngredientAnalysisResult;
+    return normalizeIngredientAnalysisResult(parsed, ingredients, profile);
+  };
+
+  if (mode === "nano") {
+    if ((await getOnDeviceStatus()) !== "available") {
+      throw new Error(
+        "Gemini Nano is not available in this browser, so on-device analysis cannot run here. Choose Auto or Gemini Flash to use the cloud model instead.",
+      );
+    }
+    return { result: await run("nano"), modelUsedLabel: "Gemini Nano (On-Device)", usedFallback: false };
+  }
+
+  if (mode === "flash") {
+    return { result: await run("flash"), modelUsedLabel: "Gemini 3.5 Flash Lite", usedFallback: false };
+  }
+
   try {
-    const model = getIngredientAnalyzerModel(mode);
-    const res = await model.generateContent(prompt);
-    const cleaned = res.response
-      .text()
-      .replace(/```json|```/g, "")
-      .trim();
-    const parsed = JSON.parse(cleaned) as IngredientAnalysisResult;
-    const normalized = normalizeIngredientAnalysisResult(parsed, ingredients, profile);
-
-    const modelUsedLabel =
-      mode === "nano" || (mode === "auto" && !navigator.onLine)
-        ? "Gemini Nano (On-Device)"
-        : "Gemini 3.5 Flash Lite";
-
-    return {
-      result: normalized,
-      modelUsedLabel,
-      usedFallback: false,
-    };
-  } catch (err) {
-    if (mode !== "flash") {
-      // Fallback gracefully to Cloud Gemini Flash if local Nano fails or is unavailable
-      const cloudModel = getIngredientAnalyzerModel("flash");
-      const fallbackRes = await cloudModel.generateContent(prompt);
-      const cleaned = fallbackRes.response
-        .text()
-        .replace(/```json|```/g, "")
-        .trim();
-      const parsed = JSON.parse(cleaned) as IngredientAnalysisResult;
-      const normalized = normalizeIngredientAnalysisResult(parsed, ingredients, profile);
-
+    return { result: await run("flash"), modelUsedLabel: "Gemini 3.5 Flash Lite", usedFallback: false };
+  } catch (cloudError) {
+    if ((await getOnDeviceStatus()) !== "available") throw cloudError;
+    try {
       return {
-        result: normalized,
-        modelUsedLabel: "Gemini 3.5 Flash Lite (Cloud Fallback)",
+        result: await run("nano"),
+        modelUsedLabel: "Gemini Nano (On-Device Fallback)",
         usedFallback: true,
         notice:
-          "On-device Gemini Nano is not supported on this browser/device. Switched to Cloud Gemini Flash for ingredient analysis.",
+          "Cloud Gemini was unavailable. Switched to Gemini Nano for on-device ingredient analysis.",
       };
+    } catch (localError) {
+      // Show both reasons; hiding the cloud one makes problems like App Check impossible to spot.
+      throw new Error(
+        `Cloud: ${(cloudError as Error).message} On-device: ${(localError as Error).message}`,
+      );
     }
-    throw err;
   }
+}
+
+/** Rules from the Profile settings; same options and wording as the iOS app. */
+function preferenceRules(): string {
+  const lines: string[] = [];
+  if (readBoolPref(PREF_KEYS.strictSafetyPenalties, true)) {
+    lines.push(
+      "- If any ingredient conflicts with an allergy, intolerance or condition in the profile (for example whey protein with lactose intolerance), safetyScore must be 39 or lower (Avoid).",
+    );
+  }
+  if (readBoolPref(PREF_KEYS.criticalAllergenAlerts, true)) {
+    lines.push(
+      '- If an ingredient matches a profile allergy such as nuts, dairy or gluten, say so clearly in the headline and add a healthFactor with impactBadge "Allergen".',
+    );
+  }
+  if (readBoolPref(PREF_KEYS.intoleranceAlerts, true)) {
+    lines.push("- Flag lactose, high sodium and high added sugar whenever they matter for the profile.");
+  }
+  return lines.length ? `\nRules:\n${lines.join("\n")}\n` : "";
 }

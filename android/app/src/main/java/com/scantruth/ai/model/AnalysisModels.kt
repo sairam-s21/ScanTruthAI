@@ -165,6 +165,27 @@ data class HealthActionPlan(
         get() = clarificationNeeded != null || actions.any { it.action == HealthActionType.CLARIFY || it.clarificationNeeded != null }
 }
 
+/** Result of checking a hand-typed health item against its list. */
+data class HealthItemValidation(
+    val isValid: Boolean,
+    val normalizedName: String? = null,
+    val reason: String? = null
+) {
+    companion object {
+        private val ALLOWED_SYMBOLS = " .,-()%'+/&".toSet()
+
+        /**
+         * Cheap check before any model call: 2-60 characters, at least two letters and no
+         * unusual symbols. Same rule as iOS and web.
+         */
+        fun passesBasicCheck(text: String): Boolean {
+            if (text.length !in 2..60) return false
+            if (text.count { it.isLetter() } < 2) return false
+            return text.all { it.isLetterOrDigit() || it in ALLOWED_SYMBOLS }
+        }
+    }
+}
+
 /** The user's approved health context, as stored in Firestore. */
 data class MedicalProfile(
     val conditions: List<String> = emptyList(),
@@ -358,7 +379,10 @@ enum class ScanKind(val wireValue: String) {
     }
 }
 
-/** One row in Home / scan history. */
+/**
+ * One row in Home / scan history. The detail fields are filled when the saved document
+ * carries them (scans saved by the iOS and web apps use the full SPEC.md schema).
+ */
 data class ScanRecord(
     val id: String,
     val kind: ScanKind,
@@ -366,8 +390,30 @@ data class ScanRecord(
     val subtitle: String,
     val safetyScore: Int?,
     val badgeLabel: String?,
-    val scannedAtMillis: Long?
-)
+    val scannedAtMillis: Long?,
+    val headline: String? = null,
+    val aiSummary: String? = null,
+    val healthFactors: List<SavedHealthFactor> = emptyList(),
+    val ingredientBreakdown: List<SavedIngredientNote> = emptyList(),
+    val intakeHeadline: String? = null,
+    val intakeGuidance: String? = null,
+    val ingredientCount: Int? = null,
+    val modelUsed: String? = null
+) {
+    /** Badge from the shared rubric (70-100 / 40-69 / 0-39), so every platform shows the same label. */
+    val displayBadge: String?
+        get() = safetyScore?.let {
+            when {
+                it >= 70 -> "Good match for you"
+                it >= 40 -> "Use with care"
+                else -> "Avoid"
+            }
+        }
+}
+
+data class SavedHealthFactor(val title: String, val description: String?, val badge: String?)
+
+data class SavedIngredientNote(val name: String, val note: String?, val status: String?)
 
 /** One saved medical report, metadata only. */
 data class ReportRecord(

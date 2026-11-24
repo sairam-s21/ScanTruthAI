@@ -1,49 +1,33 @@
 rules_version = '2';
 
 // ===============================================================
-// Assumed Data Model
+// Shared data model (SPEC.md section 2) for the iOS, Android and web apps
 // ===============================================================
 //
-// Collection: /users/{userId}
-// Document ID: {userId} (matches request.auth.uid)
-// Fields: Direct writes disallowed; owner read only.
+// /users/{userId}                       direct writes disallowed; owner read only
 //
-// Collection: /users/{userId}/medicalProfile
-// Document ID: 'current'
-// Fields:
-//   - conditions: list of strings (required, max 100 items)
-//   - allergies: list of strings (required, max 100 items)
-//   - medications: list of strings (required, max 100 items)
-//   - dietaryRestrictions: list of strings (required, max 100 items)
-//   - healthNotes: list of strings (required, max 100 items)
-//   - updatedAt: timestamp (required)
+// /users/{userId}/medicalProfile/current
+//   updatedAt (timestamp, required)
+//   conditions, allergies, medications, dietaryRestrictions, healthNotes
+//                                       (lists of strings, optional, max 100 each)
+//   healthMarkers (list, optional, max 500), markersCount (int), reportTitle (string)
+//   Partial documents are allowed because web and iOS merge with arrayUnion.
 //
-// Collection: /users/{userId}/medicalReports
-// Document ID: autoId
-// Fields:
-//   - reportTitle: string (required, max 200 chars)
-//   - reportType: string (required, max 100 chars)
-//   - markersCount: int (required, >= 0, <= 500)
-//   - identifiersMasked: int (required, >= 0)
-//   - maskedOnDevice: bool (required, must be true)
-//   - pagesScanned: int (required, >= 0, <= 50)
-//   - truncated: bool (required)
-//   - aiEngine: string (required, max 50 chars)
-//   - savedAt: timestamp (required)
+// /users/{userId}/medicalReports/{id}   append-only
+//   reportTitle, markersCount, maskedOnDevice == true (required)
+//   uploadedAt or savedAt (timestamp, at least one)
+//   reportType, identifiersMasked, pagesScanned, truncated, aiEngine (optional)
+//   Report text (raw or redacted) is never stored.
 //
-// Collection: /users/{userId}/scanHistory
-// Document ID: autoId
-// Fields:
-//   - kind: string (required, 'ingredient' or 'medical_report')
-//   - title: string (required, max 200 chars)
-//   - subtitle: string (required, max 200 chars)
-//   - reportId: string (optional, max 100 chars)
-//   - safetyScore: int (optional, >= 0, <= 100)
-//   - badgeLabel: string (optional, max 50 chars)
-//   - headline: string (optional, max 200 chars)
-//   - ingredientCount: int (optional, >= 0, <= 500)
-//   - aiEngine: string (required, max 50 chars)
-//   - scannedAt: timestamp (required)
+// /users/{userId}/healthNotes/{id}      append-only
+//   userNote, extractedSummary, createdAt (all required)
+//
+// /users/{userId}/scanHistory/{id}      append-only
+//   scannedAt (timestamp, required) and productName (or legacy title)
+//   productCategory, safetyScore (0-100), badgeLabel, headline, aiSummary,
+//   healthFactors, ingredientBreakdown, recommendedIntake, rawIngredients, modelUsed
+//   Legacy fields from Android builds before the shared schema:
+//   kind, title, subtitle, reportId, ingredientCount, aiEngine
 //
 // ===============================================================
 
@@ -54,24 +38,33 @@ service cloud.firestore {
     // Helper Functions
     // ---------------------------------------------------------------
 
-    // Check if the user is authenticated
     function isAuthenticated() {
       return request.auth != null;
     }
 
-    // Check if the user owns the path
     function isOwner(userId) {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
-    // Validate that document contains only the allowed fields
-    function hasOnlyAllowedFields(fields) {
-      return request.resource.data.keys().hasOnly(fields);
+    function optString(data, field, maxLength) {
+      return !(field in data) || (data[field] is string && data[field].size() <= maxLength);
     }
 
-    // Validate that required fields exist in document
-    function hasRequiredFields(fields) {
-      return request.resource.data.keys().hasAll(fields);
+    function optList(data, field, maxItems) {
+      return !(field in data) || (data[field] is list && data[field].size() <= maxItems);
+    }
+
+    function optInt(data, field, minValue, maxValue) {
+      return !(field in data) ||
+             (data[field] is int && data[field] >= minValue && data[field] <= maxValue);
+    }
+
+    function optBool(data, field) {
+      return !(field in data) || data[field] is bool;
+    }
+
+    function optTimestamp(data, field) {
+      return !(field in data) || data[field] is timestamp;
     }
 
     // ---------------------------------------------------------------
@@ -80,45 +73,76 @@ service cloud.firestore {
 
     // Domain Validator: /users/{userId}/medicalProfile/current
     function isValidMedicalProfile(data) {
-      return data.keys().hasOnly(['conditions', 'allergies', 'medications', 'dietaryRestrictions', 'healthNotes', 'updatedAt']) &&
-             data.keys().hasAll(['conditions', 'allergies', 'medications', 'dietaryRestrictions', 'healthNotes', 'updatedAt']) &&
-             data.conditions is list && data.conditions.size() <= 100 &&
-             data.allergies is list && data.allergies.size() <= 100 &&
-             data.medications is list && data.medications.size() <= 100 &&
-             data.dietaryRestrictions is list && data.dietaryRestrictions.size() <= 100 &&
-             data.healthNotes is list && data.healthNotes.size() <= 100 &&
-             data.updatedAt is timestamp;
+      return data.keys().hasOnly(['conditions', 'allergies', 'medications', 'dietaryRestrictions',
+                                  'healthNotes', 'healthMarkers', 'markersCount', 'reportTitle',
+                                  'updatedAt']) &&
+             data.keys().hasAll(['updatedAt']) &&
+             data.updatedAt is timestamp &&
+             optList(data, 'conditions', 100) &&
+             optList(data, 'allergies', 100) &&
+             optList(data, 'medications', 100) &&
+             optList(data, 'dietaryRestrictions', 100) &&
+             optList(data, 'healthNotes', 100) &&
+             optList(data, 'healthMarkers', 500) &&
+             optInt(data, 'markersCount', 0, 500) &&
+             optString(data, 'reportTitle', 200);
     }
 
     // Domain Validator: /users/{userId}/medicalReports/{reportId}
     function isValidMedicalReport(data) {
-      return data.keys().hasOnly(['reportTitle', 'reportType', 'markersCount', 'identifiersMasked', 'maskedOnDevice', 'pagesScanned', 'truncated', 'aiEngine', 'savedAt']) &&
-             data.keys().hasAll(['reportTitle', 'reportType', 'markersCount', 'identifiersMasked', 'maskedOnDevice', 'pagesScanned', 'truncated', 'aiEngine', 'savedAt']) &&
+      return data.keys().hasOnly(['reportTitle', 'reportType', 'markersCount', 'identifiersMasked',
+                                  'maskedOnDevice', 'pagesScanned', 'truncated', 'aiEngine',
+                                  'uploadedAt', 'savedAt']) &&
+             data.keys().hasAll(['reportTitle', 'markersCount', 'maskedOnDevice']) &&
              data.reportTitle is string && data.reportTitle.size() <= 200 &&
-             data.reportType is string && data.reportType.size() <= 100 &&
              data.markersCount is int && data.markersCount >= 0 && data.markersCount <= 500 &&
-             data.identifiersMasked is int && data.identifiersMasked >= 0 &&
              data.maskedOnDevice is bool && data.maskedOnDevice == true &&
-             data.pagesScanned is int && data.pagesScanned >= 0 && data.pagesScanned <= 50 &&
-             data.truncated is bool &&
-             data.aiEngine is string && data.aiEngine.size() <= 50 &&
-             data.savedAt is timestamp;
+             ('uploadedAt' in data || 'savedAt' in data) &&
+             optTimestamp(data, 'uploadedAt') &&
+             optTimestamp(data, 'savedAt') &&
+             optString(data, 'reportType', 100) &&
+             optInt(data, 'identifiersMasked', 0, 10000) &&
+             optInt(data, 'pagesScanned', 0, 50) &&
+             optBool(data, 'truncated') &&
+             optString(data, 'aiEngine', 50);
+    }
+
+    // Domain Validator: /users/{userId}/healthNotes/{noteId}
+    function isValidHealthNote(data) {
+      return data.keys().hasOnly(['userNote', 'extractedSummary', 'createdAt']) &&
+             data.keys().hasAll(['userNote', 'extractedSummary', 'createdAt']) &&
+             data.userNote is string && data.userNote.size() <= 5000 &&
+             data.extractedSummary is string && data.extractedSummary.size() <= 1000 &&
+             data.createdAt is timestamp;
     }
 
     // Domain Validator: /users/{userId}/scanHistory/{scanId}
     function isValidScanHistory(data) {
-      return data.keys().hasOnly(['kind', 'title', 'subtitle', 'reportId', 'safetyScore', 'badgeLabel', 'headline', 'ingredientCount', 'aiEngine', 'scannedAt']) &&
-             data.keys().hasAll(['kind', 'title', 'subtitle', 'aiEngine', 'scannedAt']) &&
-             data.kind is string && (data.kind == 'ingredient' || data.kind == 'medical_report') &&
-             data.title is string && data.title.size() <= 200 &&
-             data.subtitle is string && data.subtitle.size() <= 200 &&
-             data.aiEngine is string && data.aiEngine.size() <= 50 &&
+      return data.keys().hasOnly(['productName', 'productCategory', 'safetyScore', 'badgeLabel',
+                                  'headline', 'aiSummary', 'healthFactors', 'ingredientBreakdown',
+                                  'recommendedIntake', 'rawIngredients', 'modelUsed', 'scannedAt',
+                                  'kind', 'title', 'subtitle', 'reportId', 'ingredientCount',
+                                  'aiEngine']) &&
+             data.keys().hasAll(['scannedAt']) &&
              data.scannedAt is timestamp &&
-             (!('reportId' in data) || (data.reportId is string && data.reportId.size() <= 100)) &&
-             (!('safetyScore' in data) || (data.safetyScore is int && data.safetyScore >= 0 && data.safetyScore <= 100)) &&
-             (!('badgeLabel' in data) || (data.badgeLabel is string && data.badgeLabel.size() <= 50)) &&
-             (!('headline' in data) || (data.headline is string && data.headline.size() <= 200)) &&
-             (!('ingredientCount' in data) || (data.ingredientCount is int && data.ingredientCount >= 0 && data.ingredientCount <= 500));
+             ('productName' in data || 'title' in data) &&
+             optString(data, 'productName', 200) &&
+             optString(data, 'productCategory', 50) &&
+             optInt(data, 'safetyScore', 0, 100) &&
+             optString(data, 'badgeLabel', 50) &&
+             optString(data, 'headline', 500) &&
+             optString(data, 'aiSummary', 4000) &&
+             optList(data, 'healthFactors', 40) &&
+             optList(data, 'ingredientBreakdown', 100) &&
+             optList(data, 'rawIngredients', 500) &&
+             (!('recommendedIntake' in data) || data.recommendedIntake is map) &&
+             optString(data, 'modelUsed', 100) &&
+             (!('kind' in data) || data.kind in ['ingredient', 'medical_report']) &&
+             optString(data, 'title', 200) &&
+             optString(data, 'subtitle', 200) &&
+             optString(data, 'reportId', 100) &&
+             optInt(data, 'ingredientCount', 0, 500) &&
+             optString(data, 'aiEngine', 50);
     }
 
     // ---------------------------------------------------------------
@@ -140,6 +164,13 @@ service cloud.firestore {
       match /medicalReports/{reportId} {
         allow read, delete: if isOwner(userId);
         allow create: if isOwner(userId) && isValidMedicalReport(request.resource.data);
+        allow update: if false;
+      }
+
+      // Typed health notes: append-only (no updates allowed)
+      match /healthNotes/{noteId} {
+        allow read, delete: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidHealthNote(request.resource.data);
         allow update: if false;
       }
 

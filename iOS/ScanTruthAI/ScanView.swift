@@ -514,10 +514,19 @@ struct ScanView: View {
               var payload = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
 
         // Keys must match the shared schema (docx section 3D / SPEC.md) so Web and Android read them.
-        payload["rawIngredients"] = detectedIngredients
-        payload["modelUsed"] = modelUsedLabel
+        payload["rawIngredients"] = Array(detectedIngredients.prefix(500))
+        payload["modelUsed"] = String(modelUsedLabel.prefix(100))
         payload["safetyScore"] = result.clampedScore ?? 0
         payload["badgeLabel"] = result.displayBadge
+
+        // firestore.rules requires a product name and caps text and list sizes.
+        payload["productName"] = (payload["productName"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "Scanned product"
+        for (key, limit) in [("productName", 200), ("productCategory", 50), ("headline", 500), ("aiSummary", 4000)] {
+            if let text = payload[key] as? String { payload[key] = String(text.prefix(limit)) }
+        }
+        for (key, limit) in [("healthFactors", 40), ("ingredientBreakdown", 100)] {
+            if let list = payload[key] as? [Any] { payload[key] = Array(list.prefix(limit)) }
+        }
         do {
             try await FirestoreService.shared.saveScanHistory(scanPayload: payload)
         } catch {

@@ -9,6 +9,7 @@ import com.scantruth.ai.model.HealthActionItem
 import com.scantruth.ai.model.HealthActionPlan
 import com.scantruth.ai.model.HealthActionType
 import com.scantruth.ai.model.HealthContextSuggestion
+import com.scantruth.ai.model.HealthItemValidation
 import com.scantruth.ai.model.IngredientAnalysis
 import com.scantruth.ai.model.IngredientVerdict
 import com.scantruth.ai.model.MarkerStatus
@@ -108,6 +109,13 @@ internal data class NanoIdentifierDto(
 @Serializable
 internal data class NanoIdentifierResponseDto(
     val items: List<NanoIdentifierDto> = emptyList()
+)
+
+@Serializable
+internal data class HealthItemValidationDto(
+    val isValid: Boolean? = null,
+    val normalizedName: String? = null,
+    val reason: String? = null
 )
 
 // ---------------------------------------------------------------- parser
@@ -421,6 +429,22 @@ object AiResponseParser {
                 .take(50)
         } catch (e: Exception) {
             emptyList()
+        }
+    }
+
+    /** Null when the answer is not a usable `{ "isValid": … }` object. */
+    fun parseHealthItemValidation(raw: String): HealthItemValidation? {
+        val body = extractJsonObject(raw) ?: return null
+        return try {
+            val dto = json.decodeFromString(HealthItemValidationDto.serializer(), body)
+            val valid = dto.isValid ?: return null
+            HealthItemValidation(
+                isValid = valid,
+                normalizedName = dto.normalizedName?.trim()?.takeIf { it.isNotEmpty() },
+                reason = dto.reason?.trim()?.takeIf { it.isNotEmpty() }
+            )
+        } catch (e: Exception) {
+            null
         }
     }
 

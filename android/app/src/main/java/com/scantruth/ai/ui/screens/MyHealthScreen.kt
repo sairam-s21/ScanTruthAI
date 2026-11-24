@@ -147,6 +147,16 @@ fun MyHealthScreen(
             item { SignedOutCard() }
         }
 
+        val itemMessage = state.itemMessage
+        if (state.isValidatingItem || itemMessage != null) {
+            item {
+                ItemStatusBanner(
+                    busy = state.isValidatingItem,
+                    message = itemMessage ?: "Working…"
+                )
+            }
+        }
+
         if (state.isSignedIn && state.isLoading) {
             item { LoadingPanel(message = "Loading your health profile…") }
         }
@@ -207,10 +217,9 @@ fun MyHealthScreen(
                         val added = conditionInput.split(',', ';', '\n')
                             .map { it.trim() }
                             .filter { it.isNotEmpty() }
-                        val merged = (conditionDraft + added)
-                            .distinctBy { it.lowercase() }
-                        if (merged.size != conditionDraft.size) {
-                            conditionDraft = merged
+                            .filterNot { new -> conditionDraft.any { it.equals(new, ignoreCase = true) } }
+                        state.validateItems(scope, ProfileCategory.CONDITIONS, added) { valid ->
+                            conditionDraft = (conditionDraft + valid).distinctBy { it.lowercase() }
                             conditionInput = ""
                         }
                     },
@@ -378,7 +387,7 @@ fun MyHealthScreen(
                         state.addItem(scope, category, dialogDraft)
                         dialogCategory = null
                     },
-                    enabled = dialogDraft.isNotBlank() && !state.isSavingProfile
+                    enabled = dialogDraft.isNotBlank() && !state.isSavingProfile && !state.isValidatingItem
                 ) {
                     Text("Add")
                 }
@@ -435,6 +444,35 @@ fun MyHealthScreen(
                 }
             }
         )
+    }
+}
+
+@Composable
+private fun ItemStatusBanner(busy: Boolean, message: String) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = Brand.Soft
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (busy) {
+                CircularProgressIndicator(
+                    modifier = Modifier
+                        .padding(end = 10.dp)
+                        .size(16.dp),
+                    strokeWidth = 2.dp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
 

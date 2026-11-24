@@ -104,6 +104,23 @@ class FirestoreRulesEngineTest {
                     }
                 }
 
+                "healthNotes" -> {
+                    // match /healthNotes/{noteId}
+                    if (!isOwner) return RuleResult.DENY
+
+                    return when (request.method) {
+                        OperationMethod.GET -> if (segments.size == 4) RuleResult.ALLOW else RuleResult.DENY
+                        OperationMethod.LIST -> if (segments.size == 3) RuleResult.ALLOW else RuleResult.DENY
+                        OperationMethod.DELETE -> if (segments.size == 4) RuleResult.ALLOW else RuleResult.DENY
+                        OperationMethod.CREATE -> {
+                            if (segments.size != 4) return RuleResult.DENY
+                            val data = request.requestResourceData ?: return RuleResult.DENY
+                            if (isValidHealthNote(data)) RuleResult.ALLOW else RuleResult.DENY
+                        }
+                        OperationMethod.UPDATE -> RuleResult.DENY
+                    }
+                }
+
                 "scanHistory" -> {
                     // match /scanHistory/{scanId}
                     if (!isOwner) return RuleResult.DENY
@@ -125,102 +142,93 @@ class FirestoreRulesEngineTest {
             }
         }
 
+        private fun optString(data: Map<String, Any?>, field: String, max: Int): Boolean =
+            field !in data || (data[field] as? String)?.let { it.length <= max } == true
+
+        private fun optList(data: Map<String, Any?>, field: String, max: Int): Boolean =
+            field !in data || (data[field] as? List<*>)?.let { it.size <= max } == true
+
+        private fun optInt(data: Map<String, Any?>, field: String, range: IntRange): Boolean =
+            field !in data || (data[field] is Int && (data[field] as Int) in range)
+
+        private fun optBool(data: Map<String, Any?>, field: String): Boolean =
+            field !in data || data[field] is Boolean
+
+        private fun optTimestamp(data: Map<String, Any?>, field: String): Boolean =
+            field !in data || isTimestamp(data[field])
+
         private fun isValidMedicalProfile(data: Map<String, Any?>): Boolean {
-            val allowedKeys = setOf("conditions", "allergies", "medications", "dietaryRestrictions", "healthNotes", "updatedAt")
-            if (data.keys != allowedKeys) return false
-
-            val conditions = data["conditions"] as? List<*> ?: return false
-            val allergies = data["allergies"] as? List<*> ?: return false
-            val medications = data["medications"] as? List<*> ?: return false
-            val dietaryRestrictions = data["dietaryRestrictions"] as? List<*> ?: return false
-            val healthNotes = data["healthNotes"] as? List<*> ?: return false
-            val updatedAt = data["updatedAt"]
-
-            if (conditions.size > 100 || allergies.size > 100 || medications.size > 100 ||
-                dietaryRestrictions.size > 100 || healthNotes.size > 100
-            ) return false
-
-            if (!isTimestamp(updatedAt)) return false
-
-            return true
+            val allowedKeys = setOf(
+                "conditions", "allergies", "medications", "dietaryRestrictions", "healthNotes",
+                "healthMarkers", "markersCount", "reportTitle", "updatedAt"
+            )
+            if (!allowedKeys.containsAll(data.keys)) return false
+            if (!isTimestamp(data["updatedAt"])) return false
+            return optList(data, "conditions", 100) &&
+                optList(data, "allergies", 100) &&
+                optList(data, "medications", 100) &&
+                optList(data, "dietaryRestrictions", 100) &&
+                optList(data, "healthNotes", 100) &&
+                optList(data, "healthMarkers", 500) &&
+                optInt(data, "markersCount", 0..500) &&
+                optString(data, "reportTitle", 200)
         }
 
         private fun isValidMedicalReport(data: Map<String, Any?>): Boolean {
             val allowedKeys = setOf(
                 "reportTitle", "reportType", "markersCount", "identifiersMasked",
-                "maskedOnDevice", "pagesScanned", "truncated", "aiEngine", "savedAt"
+                "maskedOnDevice", "pagesScanned", "truncated", "aiEngine", "uploadedAt", "savedAt"
             )
-            if (data.keys != allowedKeys) return false
-
+            if (!allowedKeys.containsAll(data.keys)) return false
             val reportTitle = data["reportTitle"] as? String ?: return false
-            val reportType = data["reportType"] as? String ?: return false
-            val markersCount = (data["markersCount"] as? Number)?.toInt() ?: return false
-            val identifiersMasked = (data["identifiersMasked"] as? Number)?.toInt() ?: return false
+            val markersCount = data["markersCount"] as? Int ?: return false
             val maskedOnDevice = data["maskedOnDevice"] as? Boolean ?: return false
-            val pagesScanned = (data["pagesScanned"] as? Number)?.toInt() ?: return false
-            val truncated = data["truncated"] as? Boolean ?: return false
-            val aiEngine = data["aiEngine"] as? String ?: return false
-            val savedAt = data["savedAt"]
-
-            if (reportTitle.length > 200) return false
-            if (reportType.length > 100) return false
-            if (markersCount !in 0..500) return false
-            if (identifiersMasked < 0) return false
+            if (reportTitle.length > 200 || markersCount !in 0..500) return false
             if (!maskedOnDevice) return false // Must be true!
-            if (pagesScanned !in 0..50) return false
-            if (aiEngine.length > 50) return false
-            if (!isTimestamp(savedAt)) return false
+            if ("uploadedAt" !in data && "savedAt" !in data) return false
+            return optTimestamp(data, "uploadedAt") &&
+                optTimestamp(data, "savedAt") &&
+                optString(data, "reportType", 100) &&
+                optInt(data, "identifiersMasked", 0..10000) &&
+                optInt(data, "pagesScanned", 0..50) &&
+                optBool(data, "truncated") &&
+                optString(data, "aiEngine", 50)
+        }
 
-            return true
+        private fun isValidHealthNote(data: Map<String, Any?>): Boolean {
+            if (data.keys != setOf("userNote", "extractedSummary", "createdAt")) return false
+            val note = data["userNote"] as? String ?: return false
+            val summary = data["extractedSummary"] as? String ?: return false
+            return note.length <= 5000 && summary.length <= 1000 && isTimestamp(data["createdAt"])
         }
 
         private fun isValidScanHistory(data: Map<String, Any?>): Boolean {
             val allowedKeys = setOf(
-                "kind", "title", "subtitle", "reportId", "safetyScore",
-                "badgeLabel", "headline", "ingredientCount", "aiEngine", "scannedAt"
+                "productName", "productCategory", "safetyScore", "badgeLabel", "headline",
+                "aiSummary", "healthFactors", "ingredientBreakdown", "recommendedIntake",
+                "rawIngredients", "modelUsed", "scannedAt",
+                "kind", "title", "subtitle", "reportId", "ingredientCount", "aiEngine"
             )
-            val requiredKeys = setOf("kind", "title", "subtitle", "aiEngine", "scannedAt")
-
             if (!allowedKeys.containsAll(data.keys)) return false
-            if (!data.keys.containsAll(requiredKeys)) return false
-
-            val kind = data["kind"] as? String ?: return false
-            if (kind != "ingredient" && kind != "medical_report") return false
-
-            val title = data["title"] as? String ?: return false
-            val subtitle = data["subtitle"] as? String ?: return false
-            val aiEngine = data["aiEngine"] as? String ?: return false
-            val scannedAt = data["scannedAt"]
-
-            if (title.length > 200 || subtitle.length > 200 || aiEngine.length > 50) return false
-            if (!isTimestamp(scannedAt)) return false
-
-            data["reportId"]?.let {
-                val repId = it as? String ?: return false
-                if (repId.length > 100) return false
-            }
-
-            data["safetyScore"]?.let {
-                val score = (it as? Number)?.toInt() ?: return false
-                if (score !in 0..100) return false
-            }
-
-            data["badgeLabel"]?.let {
-                val badge = it as? String ?: return false
-                if (badge.length > 50) return false
-            }
-
-            data["headline"]?.let {
-                val hl = it as? String ?: return false
-                if (hl.length > 200) return false
-            }
-
-            data["ingredientCount"]?.let {
-                val count = (it as? Number)?.toInt() ?: return false
-                if (count !in 0..500) return false
-            }
-
-            return true
+            if (!isTimestamp(data["scannedAt"])) return false
+            if ("productName" !in data && "title" !in data) return false
+            data["kind"]?.let { if (it != "ingredient" && it != "medical_report") return false }
+            data["recommendedIntake"]?.let { if (it !is Map<*, *>) return false }
+            return optString(data, "productName", 200) &&
+                optString(data, "productCategory", 50) &&
+                optInt(data, "safetyScore", 0..100) &&
+                optString(data, "badgeLabel", 50) &&
+                optString(data, "headline", 500) &&
+                optString(data, "aiSummary", 4000) &&
+                optList(data, "healthFactors", 40) &&
+                optList(data, "ingredientBreakdown", 100) &&
+                optList(data, "rawIngredients", 500) &&
+                optString(data, "modelUsed", 100) &&
+                optString(data, "title", 200) &&
+                optString(data, "subtitle", 200) &&
+                optString(data, "reportId", 100) &&
+                optInt(data, "ingredientCount", 0..500) &&
+                optString(data, "aiEngine", 50)
         }
 
         private fun isTimestamp(value: Any?): Boolean {
@@ -687,5 +695,169 @@ class FirestoreRulesEngineTest {
             )
         )
         assertEquals(RuleResult.DENY, writeResult)
+    }
+
+    // =========================================================================
+    // 7. Shared schema (SPEC.md) payloads from the iOS, web and Android apps
+    // =========================================================================
+
+    private val owner = AuthContext(uid = "user_123")
+
+    private fun create(path: String, data: Map<String, Any?>): RuleResult = evaluator.evaluate(
+        SecurityRequest(auth = owner, method = OperationMethod.CREATE, path = path, requestResourceData = data)
+    )
+
+    private val sharedScanData = mapOf(
+        "productName" to "Organic Oat Bar",
+        "productCategory" to "food",
+        "safetyScore" to 86,
+        "badgeLabel" to "Good match for you",
+        "headline" to "Safe with minor sugar note",
+        "aiSummary" to "Whole grain oats provide slow-release fiber.",
+        "healthFactors" to listOf(
+            mapOf("title" to "Blood Sugar Impact", "description" to "Moderate glycemic load.",
+                "impactBadge" to "Caution", "sentiment" to "warning")
+        ),
+        "ingredientBreakdown" to listOf(
+            mapOf("name" to "Whole grain oats", "note" to "High beta-glucan.", "status" to "Great")
+        ),
+        "recommendedIntake" to mapOf("dosageHeadline" to "1 bar", "guidance" to "Pair with protein."),
+        "rawIngredients" to listOf("Whole grain oats", "Honey"),
+        "modelUsed" to "Gemini 3.5 Flash Lite",
+        "scannedAt" to "SERVER_TIMESTAMP"
+    )
+
+    @Test
+    fun `shared schema scans from every platform are accepted`() {
+        assertEquals(RuleResult.ALLOW, create("/users/user_123/scanHistory/ios_or_web", sharedScanData))
+        // Android also tags its scans with the legacy kind field.
+        assertEquals(
+            RuleResult.ALLOW,
+            create("/users/user_123/scanHistory/android", sharedScanData + ("kind" to "ingredient"))
+        )
+    }
+
+    @Test
+    fun `scan without a product name or legacy title is rejected`() {
+        assertEquals(
+            RuleResult.DENY,
+            create("/users/user_123/scanHistory/nameless", sharedScanData - "productName")
+        )
+    }
+
+    @Test
+    fun `scan with unknown fields or a non-map intake is rejected`() {
+        assertEquals(
+            RuleResult.DENY,
+            create("/users/user_123/scanHistory/extra", sharedScanData + ("rawOcrText" to "label text"))
+        )
+        assertEquals(
+            RuleResult.DENY,
+            create("/users/user_123/scanHistory/intake", sharedScanData + ("recommendedIntake" to "1 bar"))
+        )
+    }
+
+    @Test
+    fun `partial profile merges from web and iOS are accepted`() {
+        // Web: arrayUnion merge of a single list.
+        assertEquals(
+            RuleResult.ALLOW,
+            create(
+                "/users/user_123/medicalProfile/current",
+                mapOf("allergies" to listOf("Peanuts"), "updatedAt" to "SERVER_TIMESTAMP")
+            )
+        )
+        // iOS: full merge including health markers.
+        assertEquals(
+            RuleResult.ALLOW,
+            create(
+                "/users/user_123/medicalProfile/current",
+                mapOf(
+                    "conditions" to listOf("Pre-diabetic"),
+                    "allergies" to listOf("Peanuts"),
+                    "medications" to emptyList<String>(),
+                    "dietaryRestrictions" to listOf("Low added sugar"),
+                    "healthMarkers" to listOf(
+                        mapOf("category" to "Glucose", "value" to "Pre-diabetic", "tone" to "coral", "iconType" to "glucose")
+                    ),
+                    "markersCount" to 1,
+                    "reportTitle" to "Blood test report",
+                    "updatedAt" to "SERVER_TIMESTAMP"
+                )
+            )
+        )
+    }
+
+    @Test
+    fun `profile without updatedAt or with unknown fields is rejected`() {
+        assertEquals(
+            RuleResult.DENY,
+            create("/users/user_123/medicalProfile/current", mapOf("allergies" to listOf("Peanuts")))
+        )
+        assertEquals(
+            RuleResult.DENY,
+            create(
+                "/users/user_123/medicalProfile/current",
+                validMedicalProfileData + ("patientName" to "Ramesh Sharma")
+            )
+        )
+    }
+
+    @Test
+    fun `web and iOS report metadata is accepted but report text is not`() {
+        val sharedReport = mapOf(
+            "reportTitle" to "Blood test report",
+            "markersCount" to 2,
+            "maskedOnDevice" to true,
+            "uploadedAt" to "SERVER_TIMESTAMP"
+        )
+        assertEquals(RuleResult.ALLOW, create("/users/user_123/medicalReports/r1", sharedReport))
+        assertEquals(
+            RuleResult.DENY,
+            create("/users/user_123/medicalReports/r2", sharedReport + ("redactedText" to "[REDACTED_NAME] ..."))
+        )
+    }
+
+    @Test
+    fun `report without any timestamp is rejected`() {
+        assertEquals(
+            RuleResult.DENY,
+            create("/users/user_123/medicalReports/r3", validMedicalReportData - "savedAt")
+        )
+    }
+
+    @Test
+    fun `health notes are append-only and schema checked`() {
+        val note = mapOf(
+            "userNote" to "I was diagnosed with high blood pressure last year",
+            "extractedSummary" to "High blood pressure",
+            "createdAt" to "SERVER_TIMESTAMP"
+        )
+        assertEquals(RuleResult.ALLOW, create("/users/user_123/healthNotes/n1", note))
+        assertEquals(
+            RuleResult.DENY,
+            create("/users/user_123/healthNotes/n2", note + ("rawText" to "Patient Name: Ramesh"))
+        )
+        assertEquals(
+            RuleResult.DENY,
+            evaluator.evaluate(
+                SecurityRequest(
+                    auth = owner,
+                    method = OperationMethod.UPDATE,
+                    path = "/users/user_123/healthNotes/n1",
+                    requestResourceData = note
+                )
+            )
+        )
+        assertEquals(
+            RuleResult.DENY,
+            evaluator.evaluate(
+                SecurityRequest(
+                    auth = AuthContext(uid = "attacker_456"),
+                    method = OperationMethod.LIST,
+                    path = "/users/user_123/healthNotes"
+                )
+            )
+        )
     }
 }

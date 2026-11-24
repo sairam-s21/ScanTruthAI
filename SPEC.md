@@ -61,10 +61,11 @@ Created automatically when a user uploads a PDF/image medical report and approve
   "reportTitle": "Blood test report",
   "markersCount": 2,
   "maskedOnDevice": true,
-  "redactedText": "Patient Name: [REDACTED_NAME], DOB: [REDACTED_DOB]...",
   "uploadedAt": "<serverTimestamp>"
 }
 ```
+* The report text is **never stored**, not even the redacted version: masking can miss an identifier, and the title plus the extracted markers are enough.
+* Android also writes `reportType`, `identifiersMasked`, `pagesScanned`, `truncated`, `aiEngine` and `savedAt`. Older Android reports have `savedAt` instead of `uploadedAt`, so readers sort by `uploadedAt ?? savedAt` in the app rather than with `orderBy`.
 
 ### C. Typed Health Notes: `users/{uid}/healthNotes/{noteId}`
 Created automatically when a user types a health condition in *"Tell AI about your health"* and clicks **Update my conditions**:
@@ -114,20 +115,20 @@ Created automatically when a user scans or enters product ingredients and clicks
   * `70–100`: `"Good match for you"`
   * `40–69`: `"Use with care"`
   * `0–39`: `"Avoid"`
+* Android adds `"kind": "ingredient"`. Scans saved by Android builds before the shared schema use `title`, `subtitle`, `ingredientCount` and `aiEngine` instead, and some have `"kind": "medical_report"`; readers hide those report entries and fall back to `title` when `productName` is missing.
+* Medical reports are **not** added to scan history; they are listed from `medicalReports`.
 
 ---
 
 ## 3. Firestore Security Rules
-```javascript
-rules_version = '2';
-service cloud.firestore {
-  match /databases/{database}/documents {
-    match /users/{userId}/{document=**} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
-    }
-  }
-}
-```
+The rules live in [`android/firestore.rules`](android/firestore.rules) (deployed through `android/firebase.json`). They enforce, for every collection above:
+* Owner-only access (`request.auth.uid == userId`) and deny-by-default for any other path.
+* A field allowlist and size limits per document (for example `safetyScore` 0–100, at most 500 `rawIngredients`, `headline` up to 500 characters). Clients trim values to these limits before saving.
+* `maskedOnDevice == true` on every report, and no report text field.
+* Append-only `medicalReports`, `healthNotes` and `scanHistory` (no updates).
+* Partial `medicalProfile/current` documents, because web and iOS merge with `arrayUnion`.
+
+Tests: `android/firestore-rules-tests` (emulator, run with `android/run_rules_tests.bat`) and `FirestoreRulesEngineTest.kt` (a Kotlin mirror that must be updated with the rules).
 
 ---
 

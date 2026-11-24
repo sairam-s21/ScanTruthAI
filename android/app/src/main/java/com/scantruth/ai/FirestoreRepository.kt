@@ -13,9 +13,14 @@ import com.scantruth.ai.model.IngredientAnalysis
 import com.scantruth.ai.model.HealthContextSuggestion
 import com.scantruth.ai.model.MedicalExtraction
 import com.scantruth.ai.model.MedicalProfile
+import com.scantruth.ai.model.AiEngine
+import com.scantruth.ai.model.FactorDirection
 import com.scantruth.ai.model.ReportRecord
+import com.scantruth.ai.model.SavedHealthFactor
+import com.scantruth.ai.model.SavedIngredientNote
 import com.scantruth.ai.model.ScanKind
 import com.scantruth.ai.model.ScanRecord
+import com.scantruth.ai.model.VerdictLevel
 import java.io.File
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -157,48 +162,37 @@ object FirestoreRepository {
     ): StoreResult<String> {
         val uid = userIdOrNull() ?: return signedOut()
         return firestoreCall {
-            val userRef = db.collection(USERS).document(uid)
-            val reportRef = userRef.collection(REPORTS_SUBCOLLECTION).document()
-            val scanRef = userRef.collection(SCANS_SUBCOLLECTION).document()
-
-            val batch = db.batch()
-            batch.set(
-                reportRef,
+            // Reports live only in medicalReports; like iOS and web, no scan-history entry is
+            // added. uploadedAt is the shared field; savedAt keeps older app versions sorting.
+            val reportRef = db.collection(USERS).document(uid)
+                .collection(REPORTS_SUBCOLLECTION).document()
+            reportRef.set(
                 mapOf(
-                    "reportTitle" to extraction.reportTitle,
-                    "reportType" to extraction.reportType,
-                    "markersCount" to extraction.markers.size,
+                    "reportTitle" to extraction.reportTitle.take(200),
+                    "reportType" to extraction.reportType.take(100),
+                    "markersCount" to extraction.markers.size.coerceAtMost(500),
                     "identifiersMasked" to identifiersMasked,
                     "maskedOnDevice" to true,
                     "pagesScanned" to pagesScanned,
                     "truncated" to truncated,
                     "aiEngine" to extraction.engine.name,
+                    "uploadedAt" to FieldValue.serverTimestamp(),
                     "savedAt" to FieldValue.serverTimestamp()
                 )
-            )
-            batch.set(
-                scanRef,
-                mapOf(
-                    "kind" to ScanKind.MEDICAL_REPORT.wireValue,
-                    "title" to extraction.reportTitle,
-                    "subtitle" to extraction.reportType,
-                    "reportId" to reportRef.id,
-                    "aiEngine" to extraction.engine.name,
-                    "scannedAt" to FieldValue.serverTimestamp()
-                )
-            )
-            batch.commit().await()
+            ).await()
             reportRef.id
         }
     }
 
-    suspend fun loadReports(limit: Long = 20): StoreResult<List<ReportRecord>> {
+    /**
+     * Sorted here rather than with orderBy: Firestore drops documents that lack the sort
+     * field, and reports saved by different app versions use uploadedAt or savedAt.
+     */
+    suspend fun loadReports(limit: Int = 20): StoreResult<List<ReportRecord>> {
         val uid = userIdOrNull() ?: return signedOut()
         return firestoreCall {
             db.collection(USERS).document(uid)
                 .collection(REPORTS_SUBCOLLECTION)
-                .orderBy("savedAt", Query.Direction.DESCENDING)
-                .limit(limit)
                 .get()
                 .await()
                 .documents
@@ -206,40 +200,103 @@ object FirestoreRepository {
                     ReportRecord(
                         id = document.id,
                         reportTitle = document.getString("reportTitle") ?: "Medical report",
-                        reportType = document.getString("reportType") ?: "Unspecified report",
-                        markersCount = document.getLong("markersCount")?.toInt() ?: 0,
-                        identifiersMasked = document.getLong("identifiersMasked")?.toInt() ?: 0,
-                        savedAtMillis = document.millisAt("savedAt")
+                        reportType = document.getString("reportType") ?: "Medical report",
+                        markersCount = (document.get("markersCount") as? Number)?.toInt() ?: 0,
+                        identifiersMasked = (document.get("identifiersMasked") as? Number)?.toInt() ?: 0,
+                        savedAtMillis = document.millisAt("uploadedAt") ?: document.millisAt("savedAt")
                     )
                 }
+                .sortedByDescending { it.savedAtMillis ?: 0L }
+                .take(limit)
         }
     }
 
     // ------------------------------------------------------------------ scan history
 
+    /** Saved in the shared SPEC.md schema, so the iOS and web apps show the full result. */
     suspend fun saveIngredientScan(
         analysis: IngredientAnalysis,
-        ingredientCount: Int
+        ingredients: List<String>
     ): StoreResult<String> {
         val uid = userIdOrNull() ?: return signedOut()
         return firestoreCall {
             val reference = db.collection(USERS).document(uid)
                 .collection(SCANS_SUBCOLLECTION)
-                .add(
-                    mapOf(
-                        "kind" to ScanKind.INGREDIENT.wireValue,
-                        "title" to analysis.productName,
-                        "subtitle" to analysis.productCategory,
-                        "safetyScore" to analysis.safetyScore,
-                        "badgeLabel" to analysis.badgeLabel,
-                        "headline" to analysis.headline,
-                        "ingredientCount" to ingredientCount,
-                        "aiEngine" to analysis.engine.name,
-                        "scannedAt" to FieldValue.serverTimestamp()
-                    )
-                )
+                .add(sharedScanFields(analysis, ingredients) + ("scannedAt" to FieldValue.serverTimestamp()))
                 .await()
             reference.id
+        }
+    }
+
+    /**
+     * Maps an Android analysis onto the shared scan schema. Text and lists are trimmed to
+     * the limits in firestore.rules so a long model answer cannot make the save fail.
+     */
+    internal fun sharedScanFields(analysis: IngredientAnalysis, ingredients: List<String>): Map<String, Any> {
+        val score = analysis.safetyScore.coerceIn(0, 100)
+        return buildMap {
+            put("kind", ScanKind.INGREDIENT.wireValue)
+            put("productName", analysis.productName.ifBlank { "Scanned product" }.take(200))
+            analysis.productCategory.takeIf { it.isNotBlank() }?.let { put("productCategory", it.take(50)) }
+            put("safetyScore", score)
+            put(
+                "badgeLabel",
+                when {
+                    score >= 70 -> "Good match for you"
+                    score >= 40 -> "Use with care"
+                    else -> "Avoid"
+                }
+            )
+            analysis.headline.takeIf { it.isNotBlank() }?.let { put("headline", it.take(500)) }
+            analysis.aiSummary.takeIf { it.isNotBlank() }?.let { put("aiSummary", it.take(4000)) }
+            put(
+                "healthFactors",
+                analysis.healthFactors.take(40).map { factor ->
+                    mapOf(
+                        "title" to factor.label,
+                        "description" to factor.detail,
+                        "impactBadge" to when (factor.direction) {
+                            FactorDirection.POSITIVE -> "Safe"
+                            FactorDirection.CAUTION -> "Caution"
+                            else -> "Note"
+                        },
+                        "sentiment" to when (factor.direction) {
+                            FactorDirection.POSITIVE -> "positive"
+                            FactorDirection.CAUTION -> "warning"
+                            else -> "neutral"
+                        }
+                    )
+                }
+            )
+            put(
+                "ingredientBreakdown",
+                analysis.ingredientBreakdown.take(100).map { item ->
+                    buildMap {
+                        put("name", item.name)
+                        item.note?.takeIf { it.isNotBlank() }?.let { put("note", it) }
+                        put(
+                            "status",
+                            when (item.verdict) {
+                                VerdictLevel.CAUTION -> "Caution"
+                                VerdictLevel.AVOID -> "Avoid"
+                                else -> "Okay"
+                            }
+                        )
+                    }
+                }
+            )
+            analysis.recommendedIntake.takeIf { it.isNotBlank() }?.let {
+                put("recommendedIntake", mapOf("guidance" to it))
+            }
+            put("rawIngredients", ingredients.take(500))
+            put(
+                "modelUsed",
+                when {
+                    analysis.engine == AiEngine.ON_DEVICE -> "Gemini Nano (On-Device)"
+                    analysis.usedFallback -> "Gemini 3.5 Flash Lite (Cloud Fallback)"
+                    else -> "Gemini 3.5 Flash Lite"
+                }
+            )
         }
     }
 
@@ -253,17 +310,9 @@ object FirestoreRepository {
                 .get()
                 .await()
                 .documents
-                .map { document ->
-                    ScanRecord(
-                        id = document.id,
-                        kind = ScanKind.fromWire(document.getString("kind")),
-                        title = document.getString("title") ?: "Scan",
-                        subtitle = document.getString("subtitle") ?: "",
-                        safetyScore = document.getLong("safetyScore")?.toInt(),
-                        badgeLabel = document.getString("badgeLabel"),
-                        scannedAtMillis = document.millisAt("scannedAt")
-                    )
-                }
+                .map { document -> document.toScanRecord() }
+                // Older builds also logged reports here; reports are listed in My Health.
+                .filter { it.kind != ScanKind.MEDICAL_REPORT }
         }
     }
 
@@ -367,6 +416,44 @@ object FirestoreRepository {
         healthNotes = stringList("healthNotes"),
         updatedAtMillis = millisAt("updatedAt")
     )
+
+    /**
+     * Reads both scan formats: this app's (`title`, `subtitle`, `aiEngine`) and the shared
+     * SPEC.md schema the iOS and web apps write (`productName`, `healthFactors`, …).
+     * Fields of an unexpected type are skipped, so one odd document never breaks the list.
+     */
+    private fun DocumentSnapshot.toScanRecord(): ScanRecord {
+        fun text(field: String) = (get(field) as? String)?.trim()?.takeIf { it.isNotEmpty() }
+        fun objects(field: String) = (get(field) as? List<*>).orEmpty().mapNotNull { it as? Map<*, *> }
+        fun Map<*, *>.text(key: String) = (this[key] as? String)?.trim()?.takeIf { it.isNotEmpty() }
+
+        val intake = get("recommendedIntake")
+        val intakeMap = intake as? Map<*, *>
+        return ScanRecord(
+            id = id,
+            kind = ScanKind.fromWire(text("kind")),
+            title = text("productName") ?: text("title") ?: "Scanned product",
+            subtitle = text("productCategory") ?: text("subtitle") ?: "",
+            safetyScore = (get("safetyScore") as? Number)?.toInt()?.coerceIn(0, 100),
+            badgeLabel = text("badgeLabel"),
+            scannedAtMillis = millisAt("scannedAt"),
+            headline = text("headline"),
+            aiSummary = text("aiSummary"),
+            healthFactors = objects("healthFactors").mapNotNull { f ->
+                f.text("title")?.let { SavedHealthFactor(it, f.text("description"), f.text("impactBadge")) }
+            },
+            ingredientBreakdown = objects("ingredientBreakdown").mapNotNull { i ->
+                i.text("name")?.let { SavedIngredientNote(it, i.text("note"), i.text("status")) }
+            },
+            intakeHeadline = intakeMap?.text("dosageHeadline"),
+            intakeGuidance = intakeMap?.text("guidance") ?: (intake as? String)?.takeIf { it.isNotBlank() },
+            ingredientCount = (get("ingredientCount") as? Number)?.toInt()
+                ?: (get("rawIngredients") as? List<*>)?.size,
+            modelUsed = text("modelUsed") ?: text("aiEngine")?.let { engine ->
+                AiEngine.entries.firstOrNull { it.name == engine }?.label ?: engine
+            }
+        )
+    }
 
     private fun DocumentSnapshot.stringList(field: String): List<String> =
         (get(field) as? List<*>)?.mapNotNull { it as? String }?.filter { it.isNotBlank() }

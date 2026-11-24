@@ -232,7 +232,7 @@ class IngredientAnalysisState(
                 val result = HybridAIService.analyzeIngredients(list, usedProfile, aiMode)
                 analysis = result
                 step = IngredientStep.Ready
-                persist(result, list.size)
+                persist(result, list)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: AiAnalysisException) {
@@ -244,9 +244,9 @@ class IngredientAnalysisState(
         }
     }
 
-    private fun persist(result: IngredientAnalysis, ingredientCount: Int) {
+    private fun persist(result: IngredientAnalysis, ingredients: List<String>) {
         work.launch {
-            when (val saved = FirestoreRepository.saveIngredientScan(result, ingredientCount)) {
+            when (val saved = FirestoreRepository.saveIngredientScan(result, ingredients)) {
                 is StoreResult.Success -> {
                     saveNote = "Saved to your scan history."
                     onScanSaved?.invoke()

@@ -14,6 +14,7 @@ class ScanTruthApp : Application() {
     override fun onCreate() {
         super.onCreate()
         Firebase.initialize(this)
+        AppPreferences.init(this)
 
         // 1. Configure App Check before any Firebase AI Logic calls. The provider lives in
         //    the variant source sets: debug uses the debug token provider, release uses

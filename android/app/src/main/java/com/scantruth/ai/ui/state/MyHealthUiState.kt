@@ -11,8 +11,10 @@ import com.scantruth.ai.FirestoreRepository
 import com.scantruth.ai.FirestoreRepository.StoreResult
 import com.scantruth.ai.HybridAIService
 import com.scantruth.ai.model.HealthContextSuggestion
+import com.scantruth.ai.model.HealthItemValidation
 import com.scantruth.ai.model.MedicalProfile
 import com.scantruth.ai.model.ReportRecord
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -183,10 +185,68 @@ class MyHealthUiState {
         }
     }
 
+    /** Status line for hand-added items: "Checking …", a rejection, or a save confirmation. */
+    var itemMessage by mutableStateOf<String?>(null)
+        private set
+
+    var isValidatingItem by mutableStateOf(false)
+        private set
+
     fun addItem(scope: CoroutineScope, category: ProfileCategory, value: String) {
-        val item = value.trim()
-        if (item.isEmpty()) return
-        persist(scope, profile.withItem(category, item))
+        validateItems(scope, category, listOf(value)) { valid ->
+            val updated = valid.fold(profile) { acc, item -> acc.withItem(category, item) }
+            if (updated != profile) persist(scope, updated)
+        }
+    }
+
+    /**
+     * Only real entries reach the health context; junk would skew every scan verdict.
+     * Each item gets the cheap local check, then an AI check (Gemini Nano first, cloud only
+     * if Nano cannot answer). [onValid] receives the normalised names that passed.
+     */
+    fun validateItems(
+        scope: CoroutineScope,
+        category: ProfileCategory,
+        values: List<String>,
+        onValid: (List<String>) -> Unit
+    ) {
+        val items = values.map { it.trim() }.filter { it.isNotEmpty() }
+        if (items.isEmpty() || isValidatingItem) return
+        val rejected = { item: String ->
+            "\"$item\" doesn't look like a ${category.singular}. Check the spelling and try again."
+        }
+        items.firstOrNull { !HealthItemValidation.passesBasicCheck(it) }?.let {
+            itemMessage = rejected(it)
+            return
+        }
+
+        isValidatingItem = true
+        itemMessage = if (items.size == 1) "Checking \"${items[0]}\"…" else "Checking ${items.size} items…"
+        scope.launch {
+            try {
+                val accepted = mutableListOf<String>()
+                for (item in items) {
+                    val result = try {
+                        HybridAIService.validateHealthItem(item, category.singular)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        itemMessage = "Couldn't verify \"$item\" right now, so it wasn't added. Try again."
+                        return@launch
+                    }
+                    if (!result.isValid) {
+                        itemMessage = rejected(item)
+                        return@launch
+                    }
+                    val normalized = result.normalizedName.orEmpty()
+                    accepted += if (HealthItemValidation.passesBasicCheck(normalized)) normalized else item
+                }
+                itemMessage = "Added ${accepted.joinToString(", ")}."
+                onValid(accepted)
+            } finally {
+                isValidatingItem = false
+            }
+        }
     }
 
     fun removeItem(scope: CoroutineScope, category: ProfileCategory, value: String) {

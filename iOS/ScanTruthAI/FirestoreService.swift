@@ -64,10 +64,10 @@ final class FirestoreService {
             ], merge: true)
     }
 
+    /// Only report metadata is stored; the report text, even redacted, never leaves the device.
     func saveMedicalReportAndProfile(
         reportTitle: String,
         markersCount: Int,
-        redactedText: String,
         profileFields: [String: Any]
     ) async throws {
         let uid = try currentUid()
@@ -81,10 +81,9 @@ final class FirestoreService {
             .setData(mergedProfile, merge: true)
 
         try await userDoc.collection("medicalReports").addDocument(data: [
-            "reportTitle": reportTitle,
-            "markersCount": markersCount,
+            "reportTitle": String(reportTitle.prefix(200)),
+            "markersCount": min(max(markersCount, 0), 500),
             "maskedOnDevice": true,
-            "redactedText": redactedText,
             "uploadedAt": FieldValue.serverTimestamp()
         ])
     }
@@ -130,9 +129,10 @@ final class FirestoreService {
     /// Task 1 & 2: Save typed health note to users/{uid}/healthNotes/{noteId}
     func saveTypedHealthNote(userNote: String, extractedSummary: String) async throws {
         let uid = try currentUid()
+        // Lengths match the limits in firestore.rules.
         let noteData: [String: Any] = [
-            "userNote": userNote,
-            "extractedSummary": extractedSummary,
+            "userNote": String(userNote.prefix(5000)),
+            "extractedSummary": String(extractedSummary.prefix(1000)),
             "createdAt": FieldValue.serverTimestamp()
         ]
 
@@ -175,6 +175,8 @@ final class FirestoreService {
 
         var existingMarkers = existingData["healthMarkers"] as? [[String: Any]] ?? []
         existingMarkers.append(contentsOf: newHealthMarkers)
+        // firestore.rules caps the list at 500; keep the newest markers.
+        existingMarkers = Array(existingMarkers.suffix(500))
 
         var updatePayload: [String: Any] = [
             "conditions": Array(mergedConditions),
@@ -186,7 +188,7 @@ final class FirestoreService {
             "updatedAt": FieldValue.serverTimestamp()
         ]
         if let reportTitle {
-            updatePayload["reportTitle"] = reportTitle
+            updatePayload["reportTitle"] = String(reportTitle.prefix(200))
         }
 
         try await profileRef.setData(updatePayload, merge: true)

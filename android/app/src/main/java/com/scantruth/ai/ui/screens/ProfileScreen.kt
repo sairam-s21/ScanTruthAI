@@ -1,5 +1,9 @@
 package com.scantruth.ai.ui.screens
 
+import android.Manifest
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
@@ -18,11 +22,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -32,7 +39,10 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -49,11 +59,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.scantruth.ai.AppPreferences
+import com.scantruth.ai.WeeklyDigest
 import com.scantruth.ai.ui.components.AppCard
 import com.scantruth.ai.ui.components.AppIcons
 import com.scantruth.ai.ui.components.IconTile
@@ -67,6 +80,7 @@ import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.launch
 
 private val GoogleBlue = Color(0xFF4285F4)
+private val AiPurple = Color(0xFF7347AD)
 
 /**
  * Profile tab: the real Firebase Authentication session, followed by the privacy,
@@ -77,11 +91,75 @@ private val GoogleBlue = Color(0xFF4285F4)
  * written from here.
  */
 @Composable
-fun ProfileScreen(modifier: Modifier = Modifier) {
+fun ProfileScreen(
+    onClearSession: () -> Unit,
+    modifier: Modifier = Modifier
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val state = rememberProfileAuthState()
     var expandedSection by remember { mutableStateOf<String?>(null) }
+
+    // Settings stored on this device; same keys and defaults as iOS and web.
+    var allergenAlerts by remember {
+        mutableStateOf(AppPreferences.bool(AppPreferences.CRITICAL_ALLERGEN_ALERTS, true))
+    }
+    var intoleranceAlerts by remember {
+        mutableStateOf(AppPreferences.bool(AppPreferences.INTOLERANCE_ALERTS, true))
+    }
+    var weeklyDigest by remember {
+        mutableStateOf(AppPreferences.bool(AppPreferences.WEEKLY_DIGEST, false))
+    }
+    var strictPenalties by remember {
+        mutableStateOf(AppPreferences.bool(AppPreferences.STRICT_SAFETY_PENALTIES, true))
+    }
+    var notificationNote by remember { mutableStateOf<String?>(null) }
+    var showClearConfirmation by remember { mutableStateOf(false) }
+    var clearedMessage by remember { mutableStateOf<String?>(null) }
+
+    val setDigest: (Boolean) -> Unit = { enabled ->
+        weeklyDigest = enabled
+        AppPreferences.set(AppPreferences.WEEKLY_DIGEST, enabled)
+        if (enabled) WeeklyDigest.schedule(context) else WeeklyDigest.cancel(context)
+        notificationNote = null
+    }
+    val notificationPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted && WeeklyDigest.notificationsAllowed(context)) {
+            setDigest(true)
+        } else {
+            setDigest(false)
+            notificationNote =
+                "Allow notifications for ScanTruthAI in Settings to turn on the weekly digest."
+        }
+    }
+
+    if (showClearConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showClearConfirmation = false },
+            title = { Text("Clear session health context?") },
+            text = {
+                Text(
+                    "This removes the scan and report held on this device for this session. " +
+                        "Your saved account data is not deleted."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onClearSession()
+                    showClearConfirmation = false
+                    clearedMessage = "Cleared from this device. Data saved in your account is " +
+                        "not deleted."
+                }) {
+                    Text("Clear", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearConfirmation = false }) { Text("Cancel") }
+            }
+        )
+    }
 
     DisposableEffect(state) {
         state.start()
@@ -159,16 +237,49 @@ fun ProfileScreen(modifier: Modifier = Modifier) {
             SectionGroup(
                 title = "Privacy & Data",
                 subtitle = "What leaves this device, and when",
-                icon = AppIcons.Lock,
+                icon = AppIcons.ShieldCheck,
                 expanded = expandedSection == "privacy",
                 onToggle = {
                     expandedSection = if (expandedSection == "privacy") null else "privacy"
                 }
             ) {
-                PrivacyBullet("Names, dates, IDs and contact details are masked on this device.")
-                PrivacyBullet("A report reaches the cloud only after you approve the redacted text.")
-                PrivacyBullet("Original documents and redacted text are never stored in Firestore.")
-                PrivacyBullet("Signing out clears the cached account data on this device.")
+                PreferenceRow(
+                    title = "HIPAA Safe Harbor & ABDM Redaction",
+                    body = "Patient names, doctor references, medical record IDs, Aadhaar/SSN, " +
+                        "phone numbers and dates of birth are automatically stripped on this " +
+                        "device before any health analysis."
+                )
+                PreferenceRow(
+                    title = "Clinical Data Preservation",
+                    body = "Only anonymized clinical markers, diagnoses, lab ranges and allergies " +
+                        "are kept to personalize product safety checks."
+                )
+                PreferenceRow(
+                    title = "Local Storage Isolation",
+                    body = "Your health context is stored under your own account. This device " +
+                        "keeps only a temporary cache in the app's private storage."
+                )
+                OutlinedButton(
+                    onClick = { showClearConfirmation = true },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 4.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.25f)),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error
+                    )
+                ) {
+                    Text("Clear session health context", fontWeight = FontWeight.SemiBold)
+                }
+                clearedMessage?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                }
             }
         }
 
@@ -177,26 +288,41 @@ fun ProfileScreen(modifier: Modifier = Modifier) {
                 title = "AI Preferences",
                 subtitle = "How the analysis engines are chosen",
                 icon = AppIcons.Sparkle,
+                iconTint = AiPurple,
                 expanded = expandedSection == "ai",
                 onToggle = { expandedSection = if (expandedSection == "ai") null else "ai" }
             ) {
                 PreferenceRow(
-                    title = "Auto",
-                    body = "Gemini Nano when it is ready on this device, otherwise Gemini Flash."
+                    title = "Cloud Engine: Gemini 3.5 Flash Lite",
+                    body = "High-speed clinical reasoning that evaluates allergen conflicts, " +
+                        "glycemic impact and nutrient interactions. Only masked text and " +
+                        "ingredient names are sent."
                 )
                 PreferenceRow(
-                    title = "Gemini Flash",
-                    body = "The cloud model. Only ingredient names and your approved profile are sent."
+                    title = "On-Device Guard: Gemini Nano",
+                    body = "A model that runs on this phone to mask private details and, when you " +
+                        "choose Nano, to analyze ingredients with zero network transmission. " +
+                        "Needs a device with AICore."
                 )
                 PreferenceRow(
-                    title = "Nano",
-                    body = "Stays on this device. Never falls back to the cloud."
+                    title = "Analysis modes",
+                    body = "Auto uses Gemini Nano when it is ready on this device, otherwise " +
+                        "the cloud. Gemini Flash is cloud only. Nano never leaves your phone."
                 )
-                Text(
-                    text = "Chosen per scan on the Scan screen; the result always names the engine used.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 10.dp)
+                HorizontalDivider(
+                    thickness = 1.dp,
+                    color = MaterialTheme.colorScheme.outlineVariant,
+                    modifier = Modifier.padding(bottom = 12.dp)
+                )
+                ToggleRow(
+                    title = "Strict Clinical Safety Penalties",
+                    detail = "Enforce an automatic \"Avoid\" verdict for high-risk conflicts " +
+                        "(e.g. whey protein with lactose intolerance).",
+                    checked = strictPenalties,
+                    onCheckedChange = {
+                        strictPenalties = it
+                        AppPreferences.set(AppPreferences.STRICT_SAFETY_PENALTIES, it)
+                    }
                 )
             }
         }
@@ -204,59 +330,101 @@ fun ProfileScreen(modifier: Modifier = Modifier) {
         item {
             SectionGroup(
                 title = "Notifications",
-                subtitle = "Where results and reminders appear",
+                subtitle = "Ingredient alert settings",
                 icon = AppIcons.Bell,
                 expanded = expandedSection == "notifications",
                 onToggle = {
                     expandedSection = if (expandedSection == "notifications") null else "notifications"
                 }
             ) {
-                PreferenceRow(
-                    title = "In-app only",
-                    body = "ScanTruthAI does not send push notifications. Results appear in " +
-                        "Recent Analysis on Home, and privacy prompts appear in the review steps."
+                Text(
+                    text = "Customize the safety warnings you get when scanning food or medicine labels.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 12.dp)
                 )
-                PreferenceRow(
-                    title = "Nothing leaves silently",
-                    body = "No analysis result is shared with anyone else, and no email or " +
-                        "message is sent on your behalf."
+                ToggleRow(
+                    title = "Critical Allergen Warnings",
+                    detail = "Instant alerts for nuts, dairy, gluten and severe allergens.",
+                    checked = allergenAlerts,
+                    onCheckedChange = {
+                        allergenAlerts = it
+                        AppPreferences.set(AppPreferences.CRITICAL_ALLERGEN_ALERTS, it)
+                    }
                 )
+                HorizontalDivider(
+                    thickness = 1.dp,
+                    color = MaterialTheme.colorScheme.outlineVariant,
+                    modifier = Modifier.padding(vertical = 12.dp)
+                )
+                ToggleRow(
+                    title = "Intolerance & Sensitivity Alerts",
+                    detail = "Flag lactose, high sodium and glycemic sugar spikes.",
+                    checked = intoleranceAlerts,
+                    onCheckedChange = {
+                        intoleranceAlerts = it
+                        AppPreferences.set(AppPreferences.INTOLERANCE_ALERTS, it)
+                    }
+                )
+                HorizontalDivider(
+                    thickness = 1.dp,
+                    color = MaterialTheme.colorScheme.outlineVariant,
+                    modifier = Modifier.padding(vertical = 12.dp)
+                )
+                ToggleRow(
+                    title = "Weekly Health Scan Digest",
+                    detail = "A weekly reminder to review your scanned products against your health goals.",
+                    checked = weeklyDigest,
+                    onCheckedChange = { enabled ->
+                        when {
+                            !enabled -> setDigest(false)
+                            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                                !WeeklyDigest.notificationsAllowed(context) ->
+                                notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                            else -> setDigest(true)
+                        }
+                    }
+                )
+                notificationNote?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                }
             }
         }
 
         item {
             SectionGroup(
                 title = "Security",
-                subtitle = "Account protection in this build",
-                icon = AppIcons.ShieldCheck,
+                subtitle = "How your data and session are protected",
+                icon = AppIcons.Lock,
                 expanded = expandedSection == "security",
                 onToggle = {
                     expandedSection = if (expandedSection == "security") null else "security"
                 }
             ) {
                 PreferenceRow(
-                    title = "Google sign-in",
-                    body = "Handled by Firebase Authentication. ScanTruthAI never sees your " +
-                        "Google password."
+                    title = "Firebase App Check",
+                    body = "Requests are attested with Firebase App Check (Play Integrity, or a " +
+                        "debug token in test builds) to block unauthorized API use."
                 )
                 PreferenceRow(
-                    title = "App Check",
-                    body = "Requests to Firebase are attested for this app installation."
+                    title = "Per-User Data Isolation",
+                    body = "Firestore rules enforce strict isolation: request.auth.uid == userId."
                 )
                 PreferenceRow(
-                    title = "Local-first processing",
-                    body = "OCR and masking run on this device before any network call."
+                    title = "Encryption in Transit & at Rest",
+                    body = "TLS 1.3 transport and encrypted database storage."
                 )
-                state.session.let { session ->
-                    if (session is AuthSession.SignedIn) {
-                        Text(
-                            text = "Signed in as ${session.email ?: "your Google account"}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 12.dp)
-                        )
-                    }
-                }
+                PreferenceRow(
+                    title = "Current Session",
+                    body = (state.session as? AuthSession.SignedIn)?.let {
+                        "Authenticated as ${it.email ?: "your Google account"}"
+                    } ?: "Not signed in"
+                )
             }
         }
 
@@ -452,11 +620,51 @@ private fun SignedInCard(
                 modifier = Modifier.padding(vertical = 16.dp)
             )
 
-            InfoLine("Account ID", session.uid)
-            formatJoinedDate(session.createdAtMillis)?.let { joined ->
-                InfoLine("Member since", joined)
+            // Account ID, member-since date and sign-in method live behind "About", as on iOS.
+            var aboutExpanded by remember { mutableStateOf(false) }
+            val aboutRotation by animateFloatAsState(
+                targetValue = if (aboutExpanded) 180f else 0f,
+                label = "aboutChevron"
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable { aboutExpanded = !aboutExpanded }
+                    .padding(vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.Info,
+                    contentDescription = null,
+                    tint = Brand.Primary,
+                    modifier = Modifier.size(16.dp)
+                )
+                Text(
+                    text = "About",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Brand.Primary,
+                    modifier = Modifier
+                        .padding(start = 8.dp)
+                        .weight(1f)
+                )
+                Icon(
+                    imageVector = AppIcons.ChevronDown,
+                    contentDescription = if (aboutExpanded) "Collapse About" else "Expand About",
+                    tint = Brand.Primary,
+                    modifier = Modifier
+                        .size(14.dp)
+                        .rotate(aboutRotation)
+                )
             }
-            InfoLine("Sign-in method", "Google")
+            AnimatedVisibility(visible = aboutExpanded) {
+                Column(modifier = Modifier.padding(top = 6.dp)) {
+                    InfoLine("Account ID", session.uid)
+                    InfoLine("Member since", formatJoinedDate(session.createdAtMillis) ?: "-")
+                    InfoLine("Sign-in method", "Google")
+                }
+            }
 
             OutlinedButton(
                 onClick = onSignOut,
@@ -576,6 +784,7 @@ private fun SectionGroup(
     title: String,
     subtitle: String,
     icon: ImageVector,
+    iconTint: Color? = null,
     expanded: Boolean,
     onToggle: () -> Unit,
     content: @Composable () -> Unit
@@ -607,7 +816,7 @@ private fun SectionGroup(
                     .padding(horizontal = 18.dp, vertical = 16.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconTile(icon = icon, size = 40)
+                IconTile(icon = icon, size = 40, tint = iconTint)
                 Column(modifier = Modifier.padding(start = 14.dp).weight(1f)) {
                     Text(
                         text = title,
@@ -668,23 +877,36 @@ private fun PreferenceRow(title: String, body: String) {
 }
 
 @Composable
-private fun PrivacyBullet(text: String) {
+private fun ToggleRow(
+    title: String,
+    detail: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
     Row(
-        modifier = Modifier.padding(bottom = 8.dp),
-        verticalAlignment = Alignment.Top
+        modifier = Modifier
+            .fillMaxWidth()
+            .toggleable(value = checked, role = Role.Switch, onValueChange = onCheckedChange),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(
-            modifier = Modifier
-                .padding(top = 7.dp)
-                .size(5.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.primary)
-        )
-        Text(
-            text = text,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(start = 10.dp)
+        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = detail,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 3.dp)
+            )
+        }
+        Switch(
+            checked = checked,
+            onCheckedChange = null,
+            colors = SwitchDefaults.colors(checkedTrackColor = Brand.Primary)
         )
     }
 }

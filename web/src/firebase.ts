@@ -103,6 +103,8 @@ export const appCheck =
 
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
+// Always show Google's account chooser so a remembered session cannot silently pick the account.
+googleProvider.setCustomParameters({ prompt: "select_account" });
 
 export const db = initializeFirestore(app, {
   localCache: persistentLocalCache({

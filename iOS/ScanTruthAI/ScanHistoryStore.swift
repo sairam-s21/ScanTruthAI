@@ -119,6 +119,8 @@ final class ScanHistoryStore {
 
         do {
             let documents = try await FirestoreService.shared.fetchScanHistory(limit: limit)
+                // Older Android builds also logged reports here; reports are listed in My Health.
+                .filter { ($0.data["kind"] as? String) != "medical_report" }
             guard AuthService.shared.uid == uid else { return }
 
             let records = documents.compactMap {

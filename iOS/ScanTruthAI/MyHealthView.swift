@@ -604,7 +604,6 @@ struct MyHealthView: View {
                 try await FirestoreService.shared.saveMedicalReportAndProfile(
                     reportTitle: profile.reportTitle ?? review.sourceLabel,
                     markersCount: profile.healthMarkers?.count ?? 0,
-                    redactedText: review.gate.redactedText,
                     profileFields: [:]
                 )
             }

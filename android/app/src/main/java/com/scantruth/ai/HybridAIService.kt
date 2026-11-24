@@ -18,6 +18,7 @@ import com.scantruth.ai.model.AiMode
 import com.scantruth.ai.model.FallbackNotices
 import com.scantruth.ai.model.HealthActionPlan
 import com.scantruth.ai.model.HealthContextSuggestion
+import com.scantruth.ai.model.HealthItemValidation
 import com.scantruth.ai.model.IdentifierCategory
 import com.scantruth.ai.model.IngredientAnalysis
 import com.scantruth.ai.model.MedicalExtraction
@@ -652,11 +653,90 @@ object HybridAIService {
                     "\"verdict\":\"safe|caution|avoid\",\"note\":\"\"}]," +
                     "\"recommendedIntake\":\"\",\"uncertaintyNotes\":[]}"
             )
+            preferenceRules().takeIf { it.isNotEmpty() }?.let { rules ->
+                appendLine("Rules:")
+                rules.forEach { appendLine(it) }
+            }
             appendLine()
             appendLine(profileBlock)
             appendLine("Ingredients from the label:")
             append(ingredients.joinToString(", "))
         }
+    }
+
+    /** Rules from the Profile settings; same options and wording as iOS and web. */
+    private fun preferenceRules(): List<String> = buildList {
+        if (AppPreferences.bool(AppPreferences.STRICT_SAFETY_PENALTIES, true)) {
+            add(
+                "- If any ingredient conflicts with an allergy, intolerance or condition in the " +
+                    "profile (for example whey protein with lactose intolerance), safetyScore must " +
+                    "be 39 or lower (Avoid)."
+            )
+        }
+        if (AppPreferences.bool(AppPreferences.CRITICAL_ALLERGEN_ALERTS, true)) {
+            add(
+                "- If an ingredient matches a profile allergy such as nuts, dairy or gluten, say " +
+                    "so clearly in the headline and add a healthFactor labelled \"Allergen\"."
+            )
+        }
+        if (AppPreferences.bool(AppPreferences.INTOLERANCE_ALERTS, true)) {
+            add("- Flag lactose, high sodium and high added sugar whenever they matter for the profile.")
+        }
+    }
+
+    // ------------------------------------------------------- health item validation
+
+    /**
+     * Checks that text typed into an "Add …" dialog really is a `singular` item, e.g. rejects
+     * "asdf" or "banana" as a medication. Gemini Nano goes first so nothing leaves the device;
+     * the cloud model is used only when Nano is unavailable or fails. Throws if neither decides.
+     */
+    suspend fun validateHealthItem(text: String, singular: String): HealthItemValidation {
+        val prompt = buildString {
+            appendLine("A user typed the text below into the \"$singular\" list of their health profile.")
+            appendLine(
+                "Decide whether it is a real, recognizable $singular (misspellings of real ones " +
+                    "are fine) and not gibberish, a random word, or something that belongs in a " +
+                    "different list."
+            )
+            appendLine()
+            appendLine("Reply with JSON only, with keys:")
+            appendLine("\"isValid\" (boolean),")
+            appendLine(
+                "\"normalizedName\" (string: properly capitalized and spelled name, keeping any " +
+                    "dose such as \"500 mg\"),"
+            )
+            appendLine("and \"reason\" (short string explaining a rejection, empty if valid).")
+            appendLine()
+            append("Text: \"").append(text.replace("\"", "'")).append('"')
+        }
+
+        if (nanoAvailability() is NanoAvailability.Available) {
+            try {
+                AiResponseParser.parseHealthItemValidation(
+                    nanoModel.generateContent(prompt).text.orEmpty()
+                )?.let { return it }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Fall through to the cloud model.
+            }
+        }
+
+        val raw = generate({ validationModel }, prompt, AiEngine.CLOUD)
+        return AiResponseParser.parseHealthItemValidation(raw)
+            ?: throw AiAnalysisException(
+                AiFailureKind.INVALID_RESPONSE,
+                "The answer could not be understood."
+            )
+    }
+
+    private val validationModel by lazy {
+        Firebase.ai(backend = GenerativeBackend.googleAI()).generativeModel(
+            modelName = CLOUD_MODEL,
+            generationConfig = generationConfig { responseMimeType = "application/json" },
+            onDeviceConfig = OnDeviceConfig(mode = InferenceMode.ONLY_IN_CLOUD)
+        )
     }
 
     private fun categoryFor(raw: String?): IdentifierCategory? = when (raw?.trim()?.lowercase()) {

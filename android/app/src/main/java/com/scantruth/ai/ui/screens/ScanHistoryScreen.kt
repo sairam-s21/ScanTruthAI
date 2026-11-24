@@ -52,6 +52,7 @@ fun ScanHistoryScreen(
     var error by remember { mutableStateOf<String?>(null) }
     var signedOut by remember { mutableStateOf(!FirestoreRepository.isSignedIn()) }
     var reloadKey by remember { mutableStateOf(0) }
+    var openRecord by remember { mutableStateOf<ScanRecord?>(null) }
 
     LaunchedEffect(reloadKey) {
         isLoading = true
@@ -140,14 +141,20 @@ fun ScanHistoryScreen(
         }
 
         items(count = records.size, key = { index -> records[index].id }) { index ->
-            HistoryRow(record = records[index])
+            val record = records[index]
+            HistoryRow(record = record, onClick = { openRecord = record })
         }
+    }
+
+    openRecord?.let { record ->
+        SavedAnalysisSheet(record = record, onDismiss = { openRecord = null })
     }
 }
 
 @Composable
-private fun HistoryRow(record: ScanRecord) {
+private fun HistoryRow(record: ScanRecord, onClick: () -> Unit) {
     Surface(
+        onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.large,
         color = MaterialTheme.colorScheme.surface,
@@ -185,21 +192,21 @@ private fun HistoryRow(record: ScanRecord) {
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = if (record.kind == ScanKind.MEDICAL_REPORT) {
-                            "Medical report"
-                        } else {
-                            "Ingredient label"
+                        text = when {
+                            record.kind == ScanKind.MEDICAL_REPORT -> "Medical report"
+                            record.displayBadge != null -> record.displayBadge!!
+                            else -> "Ingredient label"
                         },
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary
+                        color = if (record.kind == ScanKind.MEDICAL_REPORT) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            scoreTone(record.safetyScore)
+                        }
                     )
                 }
 
-                val score = record.safetyScore
-                val badge = record.badgeLabel
-                if (score != null && badge != null) {
-                    AppChip(text = "$badge · $score")
-                }
+                record.safetyScore?.let { score -> AppChip(text = "$score/100") }
             }
 
             if (record.subtitle.isNotBlank()) {
@@ -211,10 +218,13 @@ private fun HistoryRow(record: ScanRecord) {
                 )
             }
 
-            val when_ = formatTimestamp(record.scannedAtMillis)
-            if (when_.isNotBlank()) {
+            val detail = listOfNotNull(
+                formatTimestamp(record.scannedAtMillis).takeIf { it.isNotBlank() },
+                record.ingredientCount?.takeIf { it > 0 }?.let { "$it ingredients" }
+            ).joinToString(" · ")
+            if (detail.isNotBlank()) {
                 Text(
-                    text = when_,
+                    text = detail,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 4.dp)

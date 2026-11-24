@@ -127,4 +127,7 @@ dependencies {
     implementation("androidx.navigation:navigation-compose:2.8.9")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.9.0")
+
+    // Weekly digest reminder (Profile > Notifications)
+    implementation("androidx.work:work-runtime-ktx:2.10.0")
 }

@@ -8,6 +8,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -49,6 +51,7 @@ import androidx.compose.ui.unit.sp
 import com.scantruth.ai.model.ScanKind
 import com.scantruth.ai.model.ScanRecord
 import com.scantruth.ai.ui.components.AppCard
+import com.scantruth.ai.ui.components.AppChip
 import com.scantruth.ai.ui.components.AppIcons
 import com.scantruth.ai.ui.components.EmptyStateCard
 import com.scantruth.ai.ui.components.ErrorPanel
@@ -57,7 +60,6 @@ import com.scantruth.ai.ui.components.LoadingPanel
 import com.scantruth.ai.ui.components.ScannerIllustration
 import com.scantruth.ai.ui.components.SectionHeader
 import com.scantruth.ai.ui.components.SoftBanner
-import com.scantruth.ai.ui.components.StatTile
 import com.scantruth.ai.ui.components.documentDisplayName
 import com.scantruth.ai.ui.components.formatShortDate
 import com.scantruth.ai.ui.components.greetingForHour
@@ -86,6 +88,7 @@ fun HomeScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var showNotifications by remember { mutableStateOf(false) }
+    var openRecord by remember { mutableStateOf<ScanRecord?>(null) }
 
     LaunchedEffect(Unit) {
         state.start(scope)
@@ -202,7 +205,8 @@ fun HomeScreen(
                 count = minOf(state.recentScans.size, 4),
                 key = { index -> state.recentScans[index].id }
             ) { index ->
-                RecentAnalysisRow(record = state.recentScans[index])
+                val record = state.recentScans[index]
+                RecentAnalysisRow(record = record, onClick = { openRecord = record })
             }
         }
 
@@ -214,6 +218,10 @@ fun HomeScreen(
                     "device. Reports reach the cloud only after you approve the redacted text."
             )
         }
+    }
+
+    openRecord?.let { record ->
+        SavedAnalysisSheet(record = record, onDismiss = { openRecord = null })
     }
 
     if (showNotifications) {
@@ -447,6 +455,7 @@ private fun SignInPromptCard(onOpenProfile: () -> Unit) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun MedicalContextCard(
     state: HomeUiState,
@@ -465,7 +474,7 @@ private fun MedicalContextCard(
                         text = if (profile.itemCount == 0) {
                             "No medical context yet"
                         } else {
-                            "Health context active"
+                            "Your health context"
                         },
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold,
@@ -475,9 +484,9 @@ private fun MedicalContextCard(
                         text = if (profile.itemCount == 0) {
                             "Add conditions and allergies so every scan is personal."
                         } else {
-                            "${profile.itemCount} health parameter" +
-                                (if (profile.itemCount == 1) "" else "s") +
-                                " actively monitoring your scans."
+                            "${profile.itemCount} " +
+                                (if (profile.itemCount == 1) "detail" else "details") +
+                                " personalize every scan."
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -486,44 +495,14 @@ private fun MedicalContextCard(
                 }
             }
 
-            if (profile.itemCount > 0) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 18.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+            val chips = (profile.conditions + profile.allergies + profile.medications).take(6)
+            if (chips.isNotEmpty()) {
+                FlowRow(
+                    modifier = Modifier.padding(top = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    StatTile(
-                        value = profile.conditions.size.toString(),
-                        label = "Diseases",
-                        icon = AppIcons.HeartPulse,
-                        modifier = Modifier.weight(1f)
-                    )
-                    StatTile(
-                        value = profile.allergies.size.toString(),
-                        label = "Allergies",
-                        icon = AppIcons.AlertTriangle,
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    StatTile(
-                        value = profile.medications.size.toString(),
-                        label = "Medications",
-                        icon = AppIcons.Pill,
-                        modifier = Modifier.weight(1f)
-                    )
-                    StatTile(
-                        value = profile.dietaryRestrictions.size.toString(),
-                        label = "Dietary",
-                        icon = AppIcons.Leaf,
-                        modifier = Modifier.weight(1f)
-                    )
+                    chips.forEach { AppChip(text = it) }
                 }
             }
 
@@ -565,11 +544,7 @@ private fun MedicalContextCard(
                     horizontalArrangement = Arrangement.Center
                 ) {
                     Text(
-                        text = if (profile.itemCount == 0) {
-                            "Build your health context"
-                        } else {
-                            "Review My Health"
-                        },
+                        text = "Build your health context",
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.primary
@@ -589,8 +564,8 @@ private fun MedicalContextCard(
 }
 
 @Composable
-private fun RecentAnalysisRow(record: ScanRecord) {
-    AppCard {
+private fun RecentAnalysisRow(record: ScanRecord, onClick: () -> Unit) {
+    AppCard(modifier = Modifier.clip(MaterialTheme.shapes.large).clickable(onClick = onClick)) {
         Row(
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically
