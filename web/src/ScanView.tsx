@@ -5,6 +5,7 @@ import { saveScanResult } from "./firestoreService";
 import { extractTextFromImage } from "./ocrService";
 import {
   analyzeIngredientsWithHybridAI,
+  describeAiError,
   extractIngredientsIntelligently,
   getOnDeviceStatus,
   type OnDeviceStatus,
@@ -174,7 +175,7 @@ export default function ScanView({
         }
       }
     } catch (err) {
-      setError(`Analysis failed: ${(err as Error).message}`);
+      setError(`Analysis failed: ${describeAiError(err)}`);
     } finally {
       setAnalyzing(false);
     }

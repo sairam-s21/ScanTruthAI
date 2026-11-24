@@ -4,6 +4,7 @@ import {
   getProfileExtractorModel,
   getIngredientAnalyzerModel,
   getIngredientClassifierModel,
+  getIngredientExtractorModel,
   type PrivacyGateResult,
   type ExtractedMedicalProfile,
   type IngredientAnalysisResult,
@@ -11,7 +12,7 @@ import {
   type HealthMarker,
   type DetectedPiiItem,
 } from "./firebase";
-import { cleanAndFilterIngredientsFromText } from "./ocrService";
+import { isGroundedIn, parseIngredientSection } from "./ingredientParser";
 import { HEALTH_CATEGORIES, type HealthCategory } from "./health";
 import { PREF_KEYS, readBoolPref } from "./preferences";
 
@@ -255,62 +256,98 @@ ${rawText}`;
   return runLocalRegexPrivacyMask(rawText);
 }
 
-// Stage 1.5: Intelligent OCR Ingredient Extraction with AI & Heuristic Shield
-export async function extractIngredientsWithAI(rawOcrText: string): Promise<string[]> {
-  if (!rawOcrText || rawOcrText.trim().length < 3) return [];
-
-  const prompt = `You are a specialized Food, Supplement, and Pharmaceutical Packaging Analyst.
-Given the raw OCR text extracted from a product label, extract ONLY the genuine edible or active product ingredients.
-
-CRITICAL EXCLUSION RULES (Do NOT include any of the following):
-- Manufacturer, packer, marketer, or distributor names and addresses (e.g., "Manufactured by", "Marketed by", "Plot No", "Industrial Area", "Pvt Ltd")
-- License & regulatory numbers (e.g., "FSSAI", "FDA", "Lic No", "ISO", "GMP", "Halal")
-- Batch, lot, barcodes, serial numbers, QR codes
-- Manufacturing dates, expiry dates, "Best before", "Use by"
-- Pricing, currency, MRP, taxes
-- Net weight, net quantity, serving size, gross weight (e.g., "500g", "Net Wt 1kg")
-- Nutrition table values and facts (e.g., "Calories 120", "Total fat 2g", "Protein 25g", "% Daily Value")
-- Storage instructions, directions for use, precautions, disclaimers
-- Marketing slogans, branding statements (e.g., "100% pure", "Immunity booster")
-
-Return ONLY valid JSON with format:
-{
-  "ingredients": ["ingredient 1", "ingredient 2", ...]
+/** Plain-language reason for a failed AI call, instead of the raw endpoint error. */
+export function describeAiError(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  if (/app check/i.test(message)) {
+    return "this site could not verify itself with Firebase App Check, so the cloud AI request was blocked. Try again in a moment; if it keeps happening, the site's reCAPTCHA setup needs attention.";
+  }
+  if (/failed to fetch|network|offline/i.test(message) || (typeof navigator !== "undefined" && !navigator.onLine)) {
+    return "the cloud AI could not be reached. Check your connection and try again.";
+  }
+  if (/quota|429|resource.?exhausted/i.test(message)) {
+    return "the cloud AI is busy right now. Try again in a minute.";
+  }
+  return message;
 }
 
-Raw label text:
-${rawOcrText.slice(0, 4000)}`;
+/** Prompt for reading the ingredient list out of a label's OCR text. */
+export function ingredientExtractionPrompt(rawOcrText: string): string {
+  return `You read the ingredient list from the packaging of a food, supplement or medicine product.
+
+The text below was produced by OCR from a phone photo of the pack. Expect OCR damage: words split or joined ("SUNFLOWERSEEDS"), misread letters ("SACILUS" for "BACILLUS", "0" for "O", "5" for "S"), lost or extra punctuation, stray symbols (¥ « | _ ©), lines in the wrong order, and text from other parts of the pack mixed in.
+
+STEP 1 - Find the ingredients section.
+- It starts at a heading such as "Ingredients", "Ingredient list", "Composition", "Contents" or "Active ingredients" (the heading itself may be misspelled by OCR, e.g. "INGREDIENIS", "1NGREDIENTS").
+- It ends where the next part of the label begins, for example: "Allergen advice", "Allergy information", "Contains:", "May contain", "Commodity", "Nutrition information", a nutrition table, "Storage", "Directions", "How to use", "Best before", "Manufactured by", "FSSAI", "Net weight", "Not for medicinal use", "Do not exceed", "Keep out of reach", or any warning or statement.
+- If there is no ingredients section, set "ingredientsSectionFound" to false and return an empty list. Never build a list from other parts of the label.
+
+STEP 2 - List only what that section names as ingredients.
+Never include anything from outside the section, even if it sounds like food. In particular, never include:
+- nutrition table rows or values ("Total salt", "Sodium", "Energy", "Protein (g)", "Bacillus coagulans (billion CFU) 0.2");
+- allergen statements ("Contains oats, soy, nuts & milk", "Processed on machinery that also processes tree nuts");
+- declarations and warnings ("Contains non caloric sweetener", "Contains naturally occurring sugars", "Not for medicinal use", "Not to be used as a substitute for a varied diet");
+- product category, serving, storage or usage text, brand names, claims, addresses, licence numbers, dates and prices.
+
+STEP 3 - Write each ingredient cleanly.
+- Split the list on commas and semicolons that are not inside brackets.
+- A group with its parts in brackets is replaced by its parts: "Protein source blend (textured soy protein flakes, whey powder)" gives "Textured soy protein flakes" and "Whey powder"; "Fruits, nuts & seeds (raisins, chia seeds, almond)" gives "Raisins", "Chia seeds", "Almond".
+- An additive class with one named substance keeps both, substance first: "Sweetener (steviol glycosides)" gives "Steviol glycosides (sweetener)"; "Emulsifier (INS 322)" gives "INS 322 (emulsifier)".
+- Remove percentages, amounts and counts: "Instant oats (33%)" gives "Instant oats"; "Bacillus coagulans SNZ 1969, 15 billion CFU/g" gives "Bacillus coagulans SNZ 1969".
+- Repair OCR errors only when the intended word is clear from the surrounding text, e.g. "HIMALAYAN PINK SAL" gives "Himalayan pink salt" and "S¥ TEVIOL GLYCOSIDES" gives "Steviol glycosides". If a fragment is unreadable, leave it out. Never add an ingredient that is not in the section.
+- Use sentence case ("Rice bran oil"), but keep codes and strain names as printed ("INS 322", "E330", "SNZ 1969").
+- Keep label order and list each ingredient once.
+
+Example
+Text: "NUTRITION INFORMATION ENERGY 120 kcal SODIUM 80 mg INGREDIENTS: WHOLE WHEAT FLOUR (62%), SUGAR, EDIBLE VEGETABLE OIL (PALM OIL), RAISING AGENTS (INS 500(ii), INS 503(ii)), IODISED SALT, EMULSIFIER (SOY LECITHIN). ALLERGEN INFORMATION: CONTAINS WHEAT AND SOY. BEST BEFORE 6 MONTHS"
+Answer: {"ingredientsSectionFound": true, "ingredients": ["Whole wheat flour", "Sugar", "Edible vegetable oil (palm oil)", "INS 500(ii) (raising agent)", "INS 503(ii) (raising agent)", "Iodised salt", "Soy lecithin (emulsifier)"]}
+
+Label text:
+"""
+${rawOcrText.slice(0, 6000)}
+"""`;
+}
+
+/** Cloud extraction. Throws when the model cannot be reached or answers in the wrong shape. */
+export async function extractIngredientsWithAI(
+  rawOcrText: string,
+): Promise<{ sectionFound: boolean; ingredients: string[] }> {
+  const res = await getIngredientExtractorModel().generateContent(ingredientExtractionPrompt(rawOcrText));
+  const parsed = JSON.parse(cleanJson(res.response.text())) as {
+    ingredientsSectionFound?: boolean;
+    ingredients?: unknown;
+  };
+  if (!Array.isArray(parsed.ingredients)) throw new Error("Unexpected ingredient answer.");
+  return {
+    sectionFound: parsed.ingredientsSectionFound !== false,
+    ingredients: parsed.ingredients
+      .filter((i): i is string => typeof i === "string")
+      .map((i) => i.replace(/\s+/g, " ").trim())
+      .filter((i) => i.length >= 2 && i.length <= 80 && /\p{L}{2,}/u.test(i)),
+  };
+}
+
+/**
+ * Ingredient list for a label photo's OCR text. The cloud model reads the section and repairs
+ * OCR errors; every item it returns must be traceable to the label text. When the model is
+ * unreachable (offline, App Check) the on-device section parser is used. An empty list means
+ * no ingredients section was found, and the caller asks the user to retake or type the list.
+ */
+export async function extractIngredientsIntelligently(rawOcrText: string): Promise<string[]> {
+  if (!rawOcrText || rawOcrText.trim().length < 3) return [];
+  const local = parseIngredientSection(rawOcrText);
 
   try {
-    const model = getIngredientClassifierModel();
-    const res = await model.generateContent(prompt);
-    const cleaned = res.response
-      .text()
-      .replace(/```json|```/g, "")
-      .trim();
-    const parsed = JSON.parse(cleaned) as { ingredients?: string[] };
-    if (parsed && Array.isArray(parsed.ingredients) && parsed.ingredients.length > 0) {
-      return parsed.ingredients
-        .map((i) => i.trim())
-        .filter((i) => i.length >= 2 && i.length <= 60 && /[a-zA-Z]/.test(i));
+    const cloud = await extractIngredientsWithAI(rawOcrText);
+    const grounded = cloud.ingredients.filter((i) => isGroundedIn(i, rawOcrText));
+    if (cloud.sectionFound && grounded.length > 0) {
+      const seen = new Set<string>();
+      return grounded.filter((i) => !seen.has(i.toLowerCase()) && !!seen.add(i.toLowerCase()));
     }
   } catch (err) {
-    console.warn("AI ingredient classification skipped, using heuristic cleaner:", err);
+    console.warn("Cloud ingredient extraction unavailable, using the on-device parser:", err);
   }
-  return cleanAndFilterIngredientsFromText(rawOcrText);
-}
-
-// Unified fast intelligent ingredient extractor
-export async function extractIngredientsIntelligently(rawOcrText: string): Promise<string[]> {
-  try {
-    const aiList = await extractIngredientsWithAI(rawOcrText);
-    if (aiList && aiList.length > 0) {
-      return aiList;
-    }
-  } catch {
-    // Graceful fallback to heuristic cleaner
-  }
-  return cleanAndFilterIngredientsFromText(rawOcrText);
+  return local.ingredients;
 }
 
 // Stage 3A: Deterministic Clinical Medical Extractor (Instant, Reliable, Offline-Ready)

@@ -227,6 +227,33 @@ export const getIngredientClassifierModel = () =>
     },
   });
 
+// Stage 1.5: Ingredient list extraction from label OCR text. Temperature 0 and a fixed
+// response shape: the same label must always give the same list.
+const ingredientExtractionSchema = Schema.object({
+  properties: {
+    ingredientsSectionFound: Schema.boolean({
+      description: "True only if the text contains an ingredients section.",
+    }),
+    ingredients: Schema.array({
+      items: Schema.string(),
+      description: "Each ingredient from the ingredients section only, in label order.",
+    }),
+  },
+});
+
+export const getIngredientExtractorModel = () =>
+  getGenerativeModel(ai, {
+    mode: InferenceMode.ONLY_IN_CLOUD,
+    inCloudParams: {
+      model: "gemini-3.5-flash-lite",
+      generationConfig: {
+        temperature: 0,
+        responseMimeType: "application/json",
+        responseSchema: ingredientExtractionSchema,
+      },
+    },
+  });
+
 // Stage 4: Hybrid Ingredient Analyzer (Supports 'auto' | 'flash' | 'nano')
 export const getIngredientAnalyzerModel = (mode: "auto" | "flash" | "nano" = "auto") => {
   if (mode === "nano") {
