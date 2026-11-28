@@ -6,13 +6,13 @@ import com.scantruth.ai.model.AiMode
 internal enum class InferenceAttempt { ON_DEVICE, CLOUD }
 
 /**
- * The ingredient engine policy, in one testable place:
+ * The ingredient engine policy, in one testable place, the same as on iOS and the web:
  *
- *  - FLASH uses the cloud model only; that is the user's explicit choice, not a fallback.
+ *  - FLASH uses the cloud model only.
  *  - NANO uses the on-device model only. It never falls back to the cloud, so the
  *    approved health profile never leaves the device in that mode.
- *  - AUTO prefers the on-device model and falls back to the cloud when Nano is not
- *    available or fails — exactly what the Scan screen promises.
+ *  - AUTO uses the cloud model and falls back to the on-device model when the cloud fails
+ *    and Nano is ready.
  */
 internal object IngredientModePlanner {
 
@@ -20,15 +20,12 @@ internal object IngredientModePlanner {
         AiMode.FLASH -> listOf(InferenceAttempt.CLOUD)
         AiMode.NANO -> listOf(InferenceAttempt.ON_DEVICE)
         AiMode.AUTO -> if (nanoReady) {
-            listOf(InferenceAttempt.ON_DEVICE, InferenceAttempt.CLOUD)
+            listOf(InferenceAttempt.CLOUD, InferenceAttempt.ON_DEVICE)
         } else {
             listOf(InferenceAttempt.CLOUD)
         }
     }
 
-    /**
-     * In AUTO any cloud call is a fallback. In FLASH the cloud is what the user asked
-     * for, and in NANO the cloud is never called at all.
-     */
-    fun cloudCountsAsFallback(mode: AiMode): Boolean = mode == AiMode.AUTO
+    /** Only in AUTO is an on-device run a fallback; in NANO it is what the user asked for. */
+    fun onDeviceCountsAsFallback(mode: AiMode): Boolean = mode == AiMode.AUTO
 }

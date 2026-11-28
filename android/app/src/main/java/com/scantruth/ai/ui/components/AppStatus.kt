@@ -29,6 +29,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.clickable
 import com.scantruth.ai.ui.theme.Brand
 
 /** Back arrow + screen title, used by every pushed (non-tab) screen. */
@@ -184,7 +186,10 @@ fun ErrorPanel(
     }
 }
 
-/** Small labelled chip used for identifiers, conditions and profile items. */
+/**
+ * Mint chip used for ingredients and profile items, sized like the website's chips.
+ * The remove control is a small grey cross, not a 48dp button, so chips stay compact.
+ */
 @Composable
 fun AppChip(
     text: String,
@@ -194,85 +199,39 @@ fun AppChip(
     selected: Boolean = false,
     onClick: (() -> Unit)? = null
 ) {
-    val containerColor = if (selected) {
-        MaterialTheme.colorScheme.primary
-    } else {
-        MaterialTheme.colorScheme.primaryContainer
-    }
-    val contentColor = if (selected) {
-        MaterialTheme.colorScheme.onPrimary
-    } else {
-        MaterialTheme.colorScheme.onPrimaryContainer
-    }
-
-    val chipContent: @Composable () -> Unit = {
-        Row(
-            modifier = Modifier.padding(
-                start = 12.dp,
-                end = if (onRemove != null || onEdit != null) 6.dp else 12.dp,
-                top = 7.dp,
-                bottom = 7.dp
-            ),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            Text(text = text, style = MaterialTheme.typography.labelMedium)
-            if (onEdit != null) {
-                Surface(
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
-                    border = BorderStroke(0.8.dp, Brand.Outline.copy(alpha = 0.5f)),
-                    onClick = onEdit,
-                    modifier = Modifier.padding(start = 2.dp)
-                ) {
-                    Icon(
-                        imageVector = AppIcons.Pencil,
-                        contentDescription = "Edit $text",
-                        tint = Brand.Primary,
-                        modifier = Modifier
-                            .padding(4.dp)
-                            .size(11.dp)
-                    )
-                }
-            }
-            if (onRemove != null) {
-                Surface(
-                    shape = CircleShape,
-                    color = Brand.DangerSoft,
-                    border = BorderStroke(0.8.dp, Brand.Danger.copy(alpha = 0.35f)),
-                    onClick = onRemove,
-                    modifier = Modifier.padding(start = 2.dp)
-                ) {
-                    Icon(
-                        imageVector = AppIcons.Close,
-                        contentDescription = "Remove $text",
-                        tint = Brand.Danger,
-                        modifier = Modifier
-                            .padding(4.dp)
-                            .size(11.dp)
-                    )
-                }
-            }
+    val container = if (selected) Brand.Primary else Brand.Soft
+    val content = if (selected) androidx.compose.ui.graphics.Color.White else MaterialTheme.colorScheme.onSurface
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(50))
+            .background(container)
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(start = 12.dp, end = if (onRemove != null || onEdit != null) 8.dp else 12.dp, top = 8.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Text(
+            text = text,
+            fontSize = 13.sp,
+            fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
+            color = content
+        )
+        if (onEdit != null) {
+            Icon(
+                imageVector = AppIcons.Pencil,
+                contentDescription = "Edit $text",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(14.dp).clip(CircleShape).clickable(onClick = onEdit)
+            )
         }
-    }
-
-    if (onClick != null) {
-        Surface(
-            modifier = modifier,
-            shape = RoundedCornerShape(50),
-            color = containerColor,
-            contentColor = contentColor,
-            onClick = onClick,
-            content = chipContent
-        )
-    } else {
-        Surface(
-            modifier = modifier,
-            shape = RoundedCornerShape(50),
-            color = containerColor,
-            contentColor = contentColor,
-            content = chipContent
-        )
+        if (onRemove != null) {
+            Icon(
+                imageVector = AppIcons.Close,
+                contentDescription = "Remove $text",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(14.dp).clip(CircleShape).clickable(onClick = onRemove)
+            )
+        }
     }
 }
 

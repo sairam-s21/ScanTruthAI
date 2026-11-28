@@ -10,7 +10,7 @@ enum class AiEngine(val label: String) {
 enum class AiMode(val label: String) {
     AUTO("Auto"),
     FLASH("Gemini Flash"),
-    NANO("Nano")
+    NANO("On-device")
 }
 
 /** The kinds of personal identifier the local privacy layer looks for. */
@@ -122,49 +122,6 @@ data class MedicalExtraction(
             dietaryRestrictions.isEmpty() && healthNotes.isEmpty() && markers.isEmpty()
 }
 
-/** Structured suggestions from the AI Health Context Assistant. */
-data class HealthContextSuggestion(
-    val conditions: List<String> = emptyList(),
-    val allergies: List<String> = emptyList(),
-    val medications: List<String> = emptyList(),
-    val dietaryRestrictions: List<String> = emptyList(),
-    val healthNotes: List<String> = emptyList(),
-    val clarificationNeeded: String? = null
-) {
-    val isEmpty: Boolean
-        get() = conditions.isEmpty() && allergies.isEmpty() && medications.isEmpty() &&
-            dietaryRestrictions.isEmpty() && healthNotes.isEmpty()
-
-    val totalCount: Int
-        get() = conditions.size + allergies.size + medications.size +
-            dietaryRestrictions.size + healthNotes.size
-}
-
-enum class HealthActionType {
-    ADD,
-    REMOVE,
-    CLARIFY
-}
-
-data class HealthActionItem(
-    val item: String,
-    val category: String,
-    val action: HealthActionType,
-    val confidence: String = "high",
-    val clarificationNeeded: String? = null
-)
-
-data class HealthActionPlan(
-    val actions: List<HealthActionItem> = emptyList(),
-    val clarificationNeeded: String? = null
-) {
-    val isEmpty: Boolean
-        get() = actions.isEmpty() && clarificationNeeded == null
-
-    val isAmbiguous: Boolean
-        get() = clarificationNeeded != null || actions.any { it.action == HealthActionType.CLARIFY || it.clarificationNeeded != null }
-}
-
 /** Result of checking a hand-typed health item against its list. */
 data class HealthItemValidation(
     val isValid: Boolean,
@@ -211,97 +168,6 @@ data class MedicalProfile(
         dietaryRestrictions = merge(dietaryRestrictions, extraction.dietaryRestrictions),
         healthNotes = merge(healthNotes, extraction.healthNotes)
     )
-
-    /** Appends AI health context suggestions, de-duplicating case-insensitively. */
-    fun mergedWith(suggestion: HealthContextSuggestion): MedicalProfile = copy(
-        conditions = merge(conditions, suggestion.conditions),
-        allergies = merge(allergies, suggestion.allergies),
-        medications = merge(medications, suggestion.medications),
-        dietaryRestrictions = merge(dietaryRestrictions, suggestion.dietaryRestrictions),
-        healthNotes = merge(healthNotes, suggestion.healthNotes)
-    )
-
-    /** Applies structured ADD and REMOVE actions atomically, returning the updated profile and summary log. */
-    fun applyingActions(actions: List<HealthActionItem>): Pair<MedicalProfile, List<String>> {
-        val currentConditions = conditions.toMutableList()
-        val currentAllergies = allergies.toMutableList()
-        val currentMedications = medications.toMutableList()
-        val currentDietary = dietaryRestrictions.toMutableList()
-        val changes = mutableListOf<String>()
-
-        actions.forEach { actionItem ->
-            val value = actionItem.item.trim()
-            if (value.isEmpty()) return@forEach
-            val catNorm = actionItem.category.lowercase().replace(" ", "").replace("_", "")
-            when (actionItem.action) {
-                HealthActionType.ADD -> {
-                    when {
-                        catNorm.contains("disease") || catNorm.contains("condition") -> {
-                            if (!currentConditions.any { it.equals(value, ignoreCase = true) }) {
-                                currentConditions.add(value)
-                                changes.add("Added $value to Diseases.")
-                            }
-                        }
-                        catNorm.contains("allerg") -> {
-                            if (!currentAllergies.any { it.equals(value, ignoreCase = true) }) {
-                                currentAllergies.add(value)
-                                changes.add("Added $value to Allergies.")
-                            }
-                        }
-                        catNorm.contains("med") -> {
-                            if (!currentMedications.any { it.equals(value, ignoreCase = true) }) {
-                                currentMedications.add(value)
-                                changes.add("Added $value to Medications.")
-                            }
-                        }
-                        catNorm.contains("diet") -> {
-                            if (!currentDietary.any { it.equals(value, ignoreCase = true) }) {
-                                currentDietary.add(value)
-                                changes.add("Added $value to Dietary Restrictions.")
-                            }
-                        }
-                    }
-                }
-                HealthActionType.REMOVE -> {
-                    when {
-                        catNorm.contains("disease") || catNorm.contains("condition") -> {
-                            val removed = currentConditions.removeAll { it.equals(value, ignoreCase = true) }
-                            if (removed) {
-                                changes.add("Removed $value from Diseases.")
-                            }
-                        }
-                        catNorm.contains("allerg") -> {
-                            val removed = currentAllergies.removeAll { it.equals(value, ignoreCase = true) }
-                            if (removed) {
-                                changes.add("Removed $value from Allergies.")
-                            }
-                        }
-                        catNorm.contains("med") -> {
-                            val removed = currentMedications.removeAll { it.equals(value, ignoreCase = true) }
-                            if (removed) {
-                                changes.add("Removed $value from Medications.")
-                            }
-                        }
-                        catNorm.contains("diet") -> {
-                            val removed = currentDietary.removeAll { it.equals(value, ignoreCase = true) }
-                            if (removed) {
-                                changes.add("Removed $value from Dietary Restrictions.")
-                            }
-                        }
-                    }
-                }
-                HealthActionType.CLARIFY -> {}
-            }
-        }
-
-        val updated = copy(
-            conditions = currentConditions.take(MAX_ITEMS_PER_LIST),
-            allergies = currentAllergies.take(MAX_ITEMS_PER_LIST),
-            medications = currentMedications.take(MAX_ITEMS_PER_LIST),
-            dietaryRestrictions = currentDietary.take(MAX_ITEMS_PER_LIST)
-        )
-        return updated to changes
-    }
 
     fun withHealthNote(note: String): MedicalProfile =
         copy(healthNotes = merge(healthNotes, listOf(note)))
@@ -354,6 +220,14 @@ data class IngredientAnalysis(
     /** Cloud-fallback notice, or null for an on-device or explicitly-cloud run. */
     val fallbackNotice: String? = null
 ) {
+    /** Engine name shown on results and saved with scans; same wording as iOS and web. */
+    val modelUsedLabel: String
+        get() = when {
+            engine == AiEngine.ON_DEVICE && usedFallback -> "Gemini Nano (On-Device Fallback)"
+            engine == AiEngine.ON_DEVICE -> "Gemini Nano (On-Device)"
+            else -> "Gemini 3.5 Flash Lite"
+        }
+
     /** 70-100 good match, 40-69 use with care, 0-39 avoid. */
     val band: SafetyBand
         get() = when {

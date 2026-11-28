@@ -45,7 +45,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -61,6 +60,9 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -69,7 +71,6 @@ import com.scantruth.ai.model.AiMode
 import com.scantruth.ai.ui.components.AppCard
 import com.scantruth.ai.ui.components.AppIcons
 import com.scantruth.ai.ui.components.CameraPreview
-import com.scantruth.ai.ui.components.ErrorPanel
 import com.scantruth.ai.ui.components.LoadingPanel
 import com.scantruth.ai.ui.components.SoftBanner
 import com.scantruth.ai.ui.components.documentDisplayName
@@ -89,7 +90,6 @@ import java.io.File
 @Composable
 fun ScanScreen(
     ingredientState: IngredientAnalysisState,
-    onOpenIngredientResult: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -106,16 +106,6 @@ fun ScanScreen(
     }
 
     val isBusy = ingredientState.isBusy
-
-    var resultOpened by rememberSaveable { mutableStateOf(false) }
-    LaunchedEffect(ingredientState.step) {
-        if (ingredientState.step != com.scantruth.ai.ui.state.IngredientStep.Ready) {
-            resultOpened = false
-        } else if (!resultOpened) {
-            resultOpened = true
-            onOpenIngredientResult()
-        }
-    }
 
     BackHandler(enabled = isBusy) {
         ingredientState.cancel()
@@ -181,7 +171,7 @@ fun ScanScreen(
 
         CameraPanel(
             hasPermission = hasCameraPermission,
-            isBusy = isBusy,
+            isBusy = ingredientState.isReadingLabel,
             error = cameraError ?: cameraState.errorMessage,
             cameraContent = { previewModifier ->
                 CameraPreview(state = cameraState, modifier = previewModifier)
@@ -201,35 +191,8 @@ fun ScanScreen(
             onType = { manualFocus.requestFocus() }
         )
 
-        val busyMessage = (ingredientState.step as? IngredientStep.Working)?.message
-        if (busyMessage != null) {
-            LoadingPanel(message = busyMessage)
-            OutlinedButton(
-                onClick = { ingredientState.cancel() },
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                colors = ButtonDefaults.outlinedButtonColors(
-                    contentColor = MaterialTheme.colorScheme.error
-                ),
-                contentPadding = PaddingValues(vertical = 12.dp)
-            ) {
-                Text("Cancel analysis", style = MaterialTheme.typography.labelLarge)
-            }
-        }
-
-        (ingredientState.step as? IngredientStep.Failed)?.let { failed ->
-            ErrorPanel(
-                title = "That label could not be used",
-                message = failed.message,
-                actionLabel = "Dismiss",
-                onAction = { ingredientState.reset() }
-            )
-        }
-
         DetectedIngredientsCard(
             state = ingredientState,
-            enabled = !isBusy,
             focusRequester = manualFocus
         )
 
@@ -245,26 +208,35 @@ fun ScanScreen(
             enabled = ingredientState.ingredients.isNotEmpty() && !isBusy,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(54.dp),
-            shape = RoundedCornerShape(16.dp),
+                .height(52.dp),
+            shape = RoundedCornerShape(14.dp),
             colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary,
-                disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant
-            ),
-            elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp)
-        ) {
-            Icon(
-                imageVector = AppIcons.Sparkle,
-                contentDescription = null,
-                modifier = Modifier.size(18.dp)
+                containerColor = Brand.Primary,
+                contentColor = Color.White,
+                disabledContainerColor = Brand.Primary.copy(alpha = 0.45f),
+                disabledContentColor = Color.White
             )
+        ) {
+            if (!ingredientState.isAnalyzing) {
+                Icon(
+                    imageVector = AppIcons.Sparkle,
+                    contentDescription = null,
+                    modifier = Modifier.size(17.dp)
+                )
+            }
             Text(
-                text = "Analyze Ingredients",
+                text = if (ingredientState.isAnalyzing) "Analyzing..." else "Analyze Ingredients",
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.padding(start = 8.dp)
+            )
+        }
+
+        ingredientState.analysisError?.let { message ->
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error
             )
         }
 
@@ -273,6 +245,15 @@ fun ScanScreen(
             title = "Read on this device",
             body = "The label photo stays on your phone. Only the ingredient names and the " +
                 "health context you approved are sent for analysis."
+        )
+    }
+
+    val result = ingredientState.analysis
+    if (result != null && ingredientState.step == IngredientStep.Ready) {
+        SavedAnalysisSheet(
+            record = result.toRecord(ingredientState.ingredients),
+            fallbackNotice = result.fallbackNotice,
+            onDismiss = { ingredientState.clearAnalysis() }
         )
     }
 }
@@ -581,15 +562,17 @@ private fun CircleControl(
 @Composable
 private fun DetectedIngredientsCard(
     state: IngredientAnalysisState,
-    enabled: Boolean,
     focusRequester: FocusRequester
 ) {
     var input by remember { mutableStateOf("") }
-    var inputError by remember { mutableStateOf<String?>(null) }
     val ingredients = state.ingredients
+    val addTyped = {
+        state.addIngredient(input)
+        input = ""
+    }
 
     AppCard {
-        Column(modifier = Modifier.padding(20.dp)) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = "Detected Ingredients",
@@ -598,11 +581,7 @@ private fun DetectedIngredientsCard(
                     color = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.weight(1f)
                 )
-                Surface(
-                    shape = RoundedCornerShape(50),
-                    color = Brand.Soft,
-                    border = BorderStroke(1.dp, Brand.Secondary.copy(alpha = 0.3f))
-                ) {
+                Surface(shape = RoundedCornerShape(50), color = Brand.Soft) {
                     Text(
                         text = "${ingredients.size}",
                         style = MaterialTheme.typography.labelMedium,
@@ -613,33 +592,22 @@ private fun DetectedIngredientsCard(
                 }
             }
 
-            Text(
-                text = when {
-                    state.isBusy && ingredients.isEmpty() -> "Reading the label on this device…"
-                    ingredients.isEmpty() -> "Nothing detected yet. Capture a label, upload a " +
-                        "photo, or type the ingredients below."
-                    else -> "Check the list and remove anything the OCR misread. This is the " +
-                        "exact list used for analysis."
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 6.dp)
-            )
-
-            if (ingredients.isNotEmpty()) {
+            if (ingredients.isEmpty()) {
+                Text(
+                    text = state.ocrMessage
+                        ?: "Nothing detected yet. Capture a label, upload a photo, or type the ingredients below.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
                 FlowRow(
-                    modifier = Modifier.padding(top = 14.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     ingredients.forEach { ingredient ->
                         com.scantruth.ai.ui.components.AppChip(
                             text = ingredient,
-                            onRemove = if (enabled) {
-                                ({ state.removeIngredient(ingredient) })
-                            } else {
-                                null
-                            }
+                            onRemove = { state.removeIngredient(ingredient) }
                         )
                     }
                 }
@@ -647,45 +615,27 @@ private fun DetectedIngredientsCard(
 
             OutlinedTextField(
                 value = input,
-                onValueChange = {
-                    input = it
-                    inputError = null
-                },
+                onValueChange = { input = it },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 16.dp)
                     .focusRequester(focusRequester),
                 label = { Text("Add an ingredient") },
                 placeholder = { Text("e.g. sugar, palm oil, salt") },
                 singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { addTyped() }),
                 shape = RoundedCornerShape(14.dp),
                 textStyle = MaterialTheme.typography.bodyMedium
             )
 
-            inputError?.let { message ->
-                Text(
-                    text = message,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(top = 6.dp)
-                )
-            }
-
             OutlinedButton(
-                onClick = {
-                    val added = state.addIngredient(input)
-                    if (added == 0) {
-                        inputError = "Add at least one new ingredient to the list."
-                    } else {
-                        input = ""
-                    }
-                },
-                enabled = enabled,
+                onClick = addTyped,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 10.dp)
-                    .height(44.dp),
-                shape = RoundedCornerShape(12.dp)
+                    .height(46.dp),
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, Brand.Primary.copy(alpha = 0.25f)),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = Brand.Primary)
             ) {
                 Icon(
                     imageVector = AppIcons.Plus,
@@ -694,7 +644,7 @@ private fun DetectedIngredientsCard(
                 )
                 Text(
                     text = "Add to list",
-                    style = MaterialTheme.typography.labelMedium,
+                    style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.padding(start = 6.dp)
                 )
@@ -740,12 +690,12 @@ private fun EngineSection(
 
             Text(
                 text = when (state.aiMode) {
-                    AiMode.AUTO -> "Gemini Nano when it is ready on this device, otherwise " +
-                        "the Gemini cloud model. The result always names the engine used."
-                    AiMode.FLASH -> "Always the Gemini cloud model. Only ingredient names and " +
-                        "your approved context are sent."
-                    AiMode.NANO -> "Stays on this device. If Nano is unavailable the analysis " +
-                        "stops instead of switching to the cloud."
+                    AiMode.AUTO -> "Gemini cloud model when it is reachable, otherwise Gemini " +
+                        "Nano on this device. The result always names the engine used."
+                    AiMode.FLASH -> "The Gemini cloud model. Only ingredient names and your " +
+                        "approved profile are sent."
+                    AiMode.NANO -> "Stays on this device using Gemini Nano. Never falls back to " +
+                        "the cloud."
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -816,11 +766,7 @@ private fun NanoStatus(state: IngredientAnalysisState, enabled: Boolean) {
                     .size(8.dp)
                     .clip(CircleShape)
                     .background(
-                        when (status) {
-                            is NanoAvailability.Available -> Brand.Secondary
-                            is NanoAvailability.Unsupported -> Brand.Warning
-                            else -> Brand.Outline
-                        }
+                        if (status is NanoAvailability.Available) Color(0xFF33A666) else Color(0xFFF2A633)
                     )
             )
             Column(modifier = Modifier.padding(start = 10.dp).weight(1f)) {
@@ -835,10 +781,13 @@ private fun NanoStatus(state: IngredientAnalysisState, enabled: Boolean) {
                         state.isCheckingNano && status == null -> "Checking Gemini Nano…"
                         status is NanoAvailability.Available -> "Gemini Nano is ready on this device."
                         status is NanoAvailability.Downloadable ->
-                            "Gemini Nano can be downloaded. Needs Wi-Fi and about 1 GB."
-                        status is NanoAvailability.Downloading -> "Gemini Nano is downloading…"
-                        status is NanoAvailability.Unsupported -> status.reason
-                        else -> "Gemini Nano availability is not known yet."
+                            "Gemini Nano is supported but not downloaded yet. Download it to use " +
+                                "on-device analysis."
+                        status is NanoAvailability.Downloading ->
+                            "Gemini Nano is downloading on this device. Check again when it finishes."
+                        else -> "Gemini Nano is not available on this device, so on-device " +
+                            "analysis cannot run here. Choose Auto or Gemini Flash to use the " +
+                            "cloud model instead."
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -73,8 +74,8 @@ fun SoftBanner(
 ) {
     Surface(
         modifier = modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.primaryContainer
+        shape = RoundedCornerShape(18.dp),
+        color = Brand.Soft.copy(alpha = 0.8f)
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp),
@@ -83,7 +84,7 @@ fun SoftBanner(
             Icon(
                 imageVector = icon,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                tint = Brand.Primary,
                 modifier = Modifier
                     .padding(top = 1.dp)
                     .size(18.dp)
@@ -92,13 +93,14 @@ fun SoftBanner(
                 Text(
                     text = title,
                     style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
                     text = body,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                    modifier = Modifier.padding(top = 3.dp)
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp)
                 )
             }
         }
@@ -216,74 +218,54 @@ fun EmptyStateCard(
  */
 @Composable
 fun ScannerIllustration(modifier: Modifier = Modifier) {
+    // Same drawing as the website's hero illustration: a 92x120 tile with soft corner
+    // brackets, three ingredient lines and a mint check badge.
     Canvas(modifier = modifier) {
         val w = size.width
         val h = size.height
-        val corner = CornerRadius(26.dp.toPx())
-
         drawRoundRect(
-            color = Color.White.copy(alpha = 0.08f),
+            color = Color.White.copy(alpha = 0.07f),
             size = Size(w, h),
-            cornerRadius = corner
+            cornerRadius = CornerRadius(16.dp.toPx())
         )
 
-        val inset = 20.dp.toPx()
-        val bracket = 26.dp.toPx()
-        val stroke = 3.dp.toPx()
-        val frame = Brand.Soft.copy(alpha = 0.85f)
+        val inset = 8.dp.toPx()
+        val arm = 18.dp.toPx()
         val left = inset
         val top = inset
         val right = w - inset
         val bottom = h - inset
-
-        val path = Path().apply {
-            // top-left
-            moveTo(left, top + bracket); lineTo(left, top); lineTo(left + bracket, top)
-            // top-right
-            moveTo(right - bracket, top); lineTo(right, top); lineTo(right, top + bracket)
-            // bottom-right
-            moveTo(right, bottom - bracket); lineTo(right, bottom); lineTo(right - bracket, bottom)
-            // bottom-left
-            moveTo(left + bracket, bottom); lineTo(left, bottom); lineTo(left, bottom - bracket)
+        val corners = Path().apply {
+            moveTo(left, top + arm); lineTo(left, top); lineTo(left + arm, top)
+            moveTo(right - arm, top); lineTo(right, top); lineTo(right, top + arm)
+            moveTo(right, bottom - arm); lineTo(right, bottom); lineTo(right - arm, bottom)
+            moveTo(left + arm, bottom); lineTo(left, bottom); lineTo(left, bottom - arm)
         }
-        drawPath(
-            path = path,
-            color = frame,
-            style = Stroke(width = stroke, cap = StrokeCap.Round)
-        )
+        drawPath(corners, color = Color.White.copy(alpha = 0.6f), style = Stroke(width = 2.dp.toPx()))
 
-        // Ingredient lines being read.
-        val lineX = left + 20.dp.toPx()
-        val widths = listOf(0.52f, 0.68f, 0.44f, 0.60f)
-        widths.forEachIndexed { index, fraction ->
+        val lineHeight = 4.dp.toPx()
+        val gap = 8.dp.toPx()
+        val widths = listOf(34.dp.toPx(), 46.dp.toPx(), 28.dp.toPx())
+        val blockHeight = widths.size * lineHeight + (widths.size - 1) * gap
+        var y = (h - blockHeight) / 2f
+        widths.forEachIndexed { index, lineWidth ->
             drawRoundRect(
-                color = Color.White.copy(alpha = 0.55f),
-                topLeft = Offset(lineX, top + 44.dp.toPx() + index * 22.dp.toPx()),
-                size = Size((right - left - 40.dp.toPx()) * fraction, 5.dp.toPx()),
-                cornerRadius = CornerRadius(3.dp.toPx())
+                color = Color.White.copy(alpha = if (index == 0) 0.35f else 0.28f),
+                topLeft = Offset(26.dp.toPx(), y),
+                size = Size(lineWidth, lineHeight),
+                cornerRadius = CornerRadius(2.dp.toPx())
             )
+            y += lineHeight + gap
         }
 
-        // Scan line.
-        drawRoundRect(
-            color = Brand.Soft,
-            topLeft = Offset(left + 12.dp.toPx(), top + 150.dp.toPx()),
-            size = Size(right - left - 24.dp.toPx(), 2.dp.toPx()),
-            cornerRadius = CornerRadius(1.dp.toPx())
-        )
-
-        // Verification badge.
-        val badgeCenter = Offset(right - 26.dp.toPx(), bottom - 26.dp.toPx())
-        drawCircle(color = Brand.Secondary, radius = 18.dp.toPx(), center = badgeCenter)
+        val radius = 14.dp.toPx()
+        val center = Offset(w - 10.dp.toPx() - radius, h - 14.dp.toPx() - radius)
+        drawCircle(color = Brand.Outline, radius = radius, center = center)
         val check = Path().apply {
-            moveTo(badgeCenter.x - 7.dp.toPx(), badgeCenter.y)
-            lineTo(badgeCenter.x - 2.dp.toPx(), badgeCenter.y + 5.dp.toPx())
-            lineTo(badgeCenter.x + 8.dp.toPx(), badgeCenter.y - 5.dp.toPx())
+            moveTo(center.x - 5.dp.toPx(), center.y)
+            lineTo(center.x - 1.5.dp.toPx(), center.y + 3.5.dp.toPx())
+            lineTo(center.x + 5.dp.toPx(), center.y - 3.5.dp.toPx())
         }
-        drawPath(
-            path = check,
-            color = Color.White,
-            style = Stroke(width = 2.6.dp.toPx(), cap = StrokeCap.Round)
-        )
+        drawPath(check, color = Brand.Primary, style = Stroke(width = 2.2.dp.toPx(), cap = StrokeCap.Round))
     }
 }

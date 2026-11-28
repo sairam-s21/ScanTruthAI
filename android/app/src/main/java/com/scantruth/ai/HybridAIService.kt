@@ -16,8 +16,6 @@ import com.scantruth.ai.ai.ParseResult
 import com.scantruth.ai.model.AiEngine
 import com.scantruth.ai.model.AiMode
 import com.scantruth.ai.model.FallbackNotices
-import com.scantruth.ai.model.HealthActionPlan
-import com.scantruth.ai.model.HealthContextSuggestion
 import com.scantruth.ai.model.HealthItemValidation
 import com.scantruth.ai.model.IdentifierCategory
 import com.scantruth.ai.model.IngredientAnalysis
@@ -301,68 +299,6 @@ object HybridAIService {
         }
     }
 
-    /**
-     * Structured health statement classification. Cloud only: sends strictly the user's
-     * explicitly entered natural language health statement and determines structured actions.
-     */
-    suspend fun classifyHealthActions(
-        statement: String,
-        currentProfile: MedicalProfile? = null
-    ): HealthActionPlan {
-        val cleanInput = statement.trim()
-        if (cleanInput.isBlank()) {
-            throw AiAnalysisException(
-                AiFailureKind.INVALID_RESPONSE,
-                "Please enter a health statement first."
-            )
-        }
-
-        // Local ambiguity check for references like "that disease" when multiple exist
-        if (currentProfile != null && currentProfile.conditions.size > 1) {
-            val lower = cleanInput.lowercase()
-            if (lower.contains("recovered from that disease") || lower.contains("no longer have that disease")) {
-                return HealthActionPlan(
-                    actions = emptyList(),
-                    clarificationNeeded = "Please clarify whether you have recovered from ${currentProfile.conditions.joinToString(" or ")}."
-                )
-            }
-        }
-
-        val prompt = healthContextPrompt(cleanInput, currentProfile)
-        val raw = generate({ healthContextAssistant }, prompt, AiEngine.CLOUD)
-        return when (val parsed = AiResponseParser.parseHealthActions(raw, cleanInput)) {
-            is ParseResult.Success -> parsed.value
-            is ParseResult.Invalid -> throw AiAnalysisException(
-                AiFailureKind.INVALID_RESPONSE,
-                parsed.reason
-            )
-        }
-    }
-
-    /**
-     * Structured health statement classification. Cloud only: sends strictly the user's
-     * explicitly entered natural language health statement.
-     */
-    suspend fun classifyHealthContext(statement: String): HealthContextSuggestion {
-        val cleanInput = statement.trim()
-        if (cleanInput.isBlank()) {
-            throw AiAnalysisException(
-                AiFailureKind.INVALID_RESPONSE,
-                "Please enter a health statement first."
-            )
-        }
-
-        val prompt = healthContextPrompt(cleanInput)
-        val raw = generate({ healthContextAssistant }, prompt, AiEngine.CLOUD)
-        return when (val parsed = AiResponseParser.parseHealthContext(raw, cleanInput)) {
-            is ParseResult.Success -> parsed.value
-            is ParseResult.Invalid -> throw AiAnalysisException(
-                AiFailureKind.INVALID_RESPONSE,
-                parsed.reason
-            )
-        }
-    }
-
     // ------------------------------------------------------------- ingredients
 
     suspend fun analyzeIngredients(
@@ -388,11 +324,17 @@ object HybridAIService {
         for ((index, attempt) in attempts.withIndex()) {
             try {
                 return when (attempt) {
-                    InferenceAttempt.ON_DEVICE -> onDeviceIngredientAnalysis(prompt)
-                    InferenceAttempt.CLOUD -> cloudIngredientAnalysis(
-                        prompt = prompt,
-                        usedFallback = IngredientModePlanner.cloudCountsAsFallback(mode)
-                    )
+                    InferenceAttempt.ON_DEVICE -> onDeviceIngredientAnalysis(prompt).let { result ->
+                        if (index > 0 && IngredientModePlanner.onDeviceCountsAsFallback(mode)) {
+                            result.copy(
+                                usedFallback = true,
+                                fallbackNotice = FallbackNotices.INGREDIENT_ON_DEVICE_FALLBACK
+                            )
+                        } else {
+                            result
+                        }
+                    }
+                    InferenceAttempt.CLOUD -> cloudIngredientAnalysis(prompt = prompt, usedFallback = false)
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -544,8 +486,20 @@ object HybridAIService {
      * redacted report text, or a label's ingredient list — and that must not reach a UI
      * string that could be screenshotted, logged or shown to another person.
      */
-    private fun cloudMessage(e: Exception): String =
-        "The cloud analysis could not be completed. Check your connection and try again."
+    private fun cloudMessage(e: Exception): String {
+        // Only the cause chain is inspected; the returned text stays fixed.
+        val causes = generateSequence<Throwable>(e) { it.cause }.take(8)
+            .joinToString(" ") { "${it::class.java.simpleName} ${it.message.orEmpty()}" }
+        return when {
+            Regex("(?i)app ?check|attestation").containsMatchIn(causes) ->
+                "This app could not verify itself with Firebase App Check, so the cloud AI request " +
+                    "was blocked. Try again in a moment; if it keeps happening, the app's App Check " +
+                    "setup needs attention."
+            Regex("(?i)quota|429|resource.?exhausted").containsMatchIn(causes) ->
+                "The cloud AI is busy right now. Try again in a minute."
+            else -> "The cloud analysis could not be completed. Check your connection and try again."
+        }
+    }
 
     private fun medicalExtractionPrompt(redactedText: String): String = buildString {
         appendLine("You extract structured data from anonymised medical reports.")
@@ -567,47 +521,6 @@ object HybridAIService {
         appendLine()
         appendLine("Report text:")
         append(redactedText)
-    }
-
-    private fun healthContextPrompt(statement: String, currentProfile: MedicalProfile? = null): String = buildString {
-        appendLine("You are an expert AI Health Profile Assistant for personal wellness management.")
-        appendLine("Analyze the user's natural language health input, which may contain multiple sentences or paragraphs, and determine structured ADD or REMOVE actions for their health profile.")
-        appendLine()
-        appendLine("THE FOUR ALLOWED CATEGORIES:")
-        appendLine("1. diseases: ONLY actual diagnosed illnesses and diseases (e.g., 'Diabetes', 'Asthma', 'Tuberculosis', 'Hypertension').")
-        appendLine("   CRITICAL EXCLUSIONS: Do NOT classify allergies, symptoms (such as fever, cough, fatigue, headache), food intolerances, medications, or environmental allergens as diseases.")
-        appendLine("2. allergies: Allergies or immune responses to foods, substances, drugs, or environmental materials (e.g., 'Peanuts', 'Penicillin', 'Latex', 'Pollen', 'Shellfish').")
-        appendLine("3. medications: Active prescription drugs, over-the-counter medications, vitamins, or supplements (e.g., 'Vitamin D', 'Metformin', 'Aspirin', 'Ibuprofen').")
-        appendLine("4. dietaryRestrictions: Dietary preferences, habits, or food intolerances (e.g., 'Lactose intolerance', 'Gluten-free', 'Vegan', 'Vegetarian', 'Halal', 'Kosher').")
-        appendLine()
-        if (currentProfile != null) {
-            appendLine("CURRENT USER HEALTH PROFILE:")
-            appendLine("- Diseases: " + currentProfile.conditions.ifEmpty { listOf("None recorded") }.joinToString(", "))
-            appendLine("- Allergies: " + currentProfile.allergies.ifEmpty { listOf("None recorded") }.joinToString(", "))
-            appendLine("- Medications: " + currentProfile.medications.ifEmpty { listOf("None recorded") }.joinToString(", "))
-            appendLine("- Dietary Restrictions: " + currentProfile.dietaryRestrictions.ifEmpty { listOf("None recorded") }.joinToString(", "))
-            appendLine()
-        }
-        appendLine("ACTION RULES (ADD, REMOVE, CLARIFY):")
-        appendLine("- ADD: When user states they have a condition, allergy, take a medication, or follow a dietary restriction.")
-        appendLine("  Extract concise, standardized terms (e.g., 'I have diabetes' -> item: 'Diabetes', category: 'diseases', action: 'ADD').")
-        appendLine("- REMOVE: When user states recovery, resolution, cessation, or that they no longer have a condition or allergy (e.g., 'I have recovered from tuberculosis' -> item: 'Tuberculosis', category: 'diseases', action: 'REMOVE'; 'I am no longer allergic to peanuts' -> item: 'Peanuts', category: 'allergies', action: 'REMOVE'). Match against the current profile entries.")
-        appendLine("- CLARIFY: When reference is ambiguous (e.g. 'I recovered from that disease' but multiple diseases exist in profile), or wording is too vague to determine which entry resolved. Formulate a specific question in 'clarificationNeeded' and do NOT remove unrelated entries.")
-        appendLine()
-        appendLine("STRICT CLINICAL & SAFETY RESTRICTIONS:")
-        appendLine("- Never infer a diagnosis. Symptoms (cough, fever, pain) MUST NOT become diseases.")
-        appendLine("- Allergies and food intolerances MUST NEVER become diseases.")
-        appendLine("- Medications MUST NEVER become diseases.")
-        appendLine("- Never invent dosages or unstated details.")
-        appendLine("- Only explicitly stated information can be added.")
-        appendLine("- Only clearly identified existing entries can be removed.")
-        appendLine()
-        appendLine("OUTPUT FORMAT:")
-        appendLine("Reply with JSON only, matching this shape:")
-        appendLine("{\"actions\":[{\"item\":\"\",\"category\":\"diseases|allergies|medications|dietaryRestrictions\",\"action\":\"ADD|REMOVE|CLARIFY\",\"confidence\":\"high|medium|low\",\"clarificationNeeded\":\"\"}],\"clarificationNeeded\":\"\"}")
-        appendLine()
-        appendLine("User input:")
-        append(statement)
     }
 
     private fun ingredientPrompt(ingredients: List<String>, profile: MedicalProfile): String {
@@ -663,6 +576,71 @@ object HybridAIService {
             append(ingredients.joinToString(", "))
         }
     }
+
+    // ------------------------------------------------------- label ingredient extraction
+
+    private val ingredientExtractor by lazy {
+        Firebase.ai(backend = GenerativeBackend.googleAI()).generativeModel(
+            modelName = CLOUD_MODEL,
+            onDeviceConfig = OnDeviceConfig(mode = InferenceMode.ONLY_IN_CLOUD),
+            generationConfig = generationConfig {
+                temperature = 0f
+                responseMimeType = "application/json"
+                responseSchema = Schema.obj(
+                    mapOf(
+                        "ingredientsSectionFound" to Schema.boolean(),
+                        "ingredients" to Schema.array(Schema.string())
+                    )
+                )
+            }
+        )
+    }
+
+    /**
+     * Cloud extraction of the ingredient list from a label's OCR text, with the same prompt
+     * as the website. Throws when the model cannot be reached or answers in the wrong shape.
+     */
+    suspend fun extractIngredients(ocrText: String): Pair<Boolean, List<String>> {
+        val raw = generate({ ingredientExtractor }, ingredientExtractionPrompt(ocrText), AiEngine.CLOUD)
+        return AiResponseParser.parseIngredientExtraction(raw)
+            ?: throw AiAnalysisException(AiFailureKind.INVALID_RESPONSE, "Unexpected ingredient answer.")
+    }
+
+    internal fun ingredientExtractionPrompt(ocrText: String): String = """
+You read the ingredient list from the packaging of a food, supplement or medicine product.
+
+The text below was produced by OCR from a phone photo of the pack. Expect OCR damage: words split or joined ("SUNFLOWERSEEDS"), misread letters ("SACILUS" for "BACILLUS", "0" for "O", "5" for "S"), lost or extra punctuation, stray symbols (¥ « | _ ©), lines in the wrong order, and text from other parts of the pack mixed in.
+
+STEP 1 - Find the ingredients section.
+- It starts at a heading such as "Ingredients", "Ingredient list", "Composition", "Contents" or "Active ingredients" (the heading itself may be misspelled by OCR, e.g. "INGREDIENIS", "1NGREDIENTS").
+- It ends where the next part of the label begins, for example: "Allergen advice", "Allergy information", "Contains:", "May contain", "Commodity", "Nutrition information", a nutrition table, "Storage", "Directions", "How to use", "Best before", "Manufactured by", "FSSAI", "Net weight", "Not for medicinal use", "Do not exceed", "Keep out of reach", or any warning or statement.
+- If there is no ingredients section, set "ingredientsSectionFound" to false and return an empty list. Never build a list from other parts of the label.
+
+STEP 2 - List only what that section names as ingredients.
+Never include anything from outside the section, even if it sounds like food. In particular, never include:
+- nutrition table rows or values ("Total salt", "Sodium", "Energy", "Protein (g)", "Bacillus coagulans (billion CFU) 0.2");
+- allergen statements ("Contains oats, soy, nuts & milk", "Processed on machinery that also processes tree nuts");
+- declarations and warnings ("Contains non caloric sweetener", "Contains naturally occurring sugars", "Not for medicinal use", "Not to be used as a substitute for a varied diet");
+- product category, serving, storage or usage text, brand names, claims, addresses, licence numbers, dates and prices.
+
+STEP 3 - Write each ingredient cleanly.
+- Split the list on commas and semicolons that are not inside brackets.
+- A group with its parts in brackets is replaced by its parts: "Protein source blend (textured soy protein flakes, whey powder)" gives "Textured soy protein flakes" and "Whey powder"; "Fruits, nuts & seeds (raisins, chia seeds, almond)" gives "Raisins", "Chia seeds", "Almond".
+- An additive class with one named substance keeps both, substance first: "Sweetener (steviol glycosides)" gives "Steviol glycosides (sweetener)"; "Emulsifier (INS 322)" gives "INS 322 (emulsifier)".
+- Remove percentages, amounts and counts: "Instant oats (33%)" gives "Instant oats"; "Bacillus coagulans SNZ 1969, 15 billion CFU/g" gives "Bacillus coagulans SNZ 1969".
+- Repair OCR errors only when the intended word is clear from the surrounding text, e.g. "HIMALAYAN PINK SAL" gives "Himalayan pink salt" and "S¥ TEVIOL GLYCOSIDES" gives "Steviol glycosides". If a fragment is unreadable, leave it out. Never add an ingredient that is not in the section.
+- Use sentence case ("Rice bran oil"), but keep codes and strain names as printed ("INS 322", "E330", "SNZ 1969").
+- Keep label order and list each ingredient once.
+
+Example
+Text: "NUTRITION INFORMATION ENERGY 120 kcal SODIUM 80 mg INGREDIENTS: WHOLE WHEAT FLOUR (62%), SUGAR, EDIBLE VEGETABLE OIL (PALM OIL), RAISING AGENTS (INS 500(ii), INS 503(ii)), IODISED SALT, EMULSIFIER (SOY LECITHIN). ALLERGEN INFORMATION: CONTAINS WHEAT AND SOY. BEST BEFORE 6 MONTHS"
+Answer: {"ingredientsSectionFound": true, "ingredients": ["Whole wheat flour", "Sugar", "Edible vegetable oil (palm oil)", "INS 500(ii) (raising agent)", "INS 503(ii) (raising agent)", "Iodised salt", "Soy lecithin (emulsifier)"]}
+
+Label text:
+${"\"\"\""}
+${ocrText.take(6000)}
+${"\"\"\""}
+""".trimStart()
 
     /** Rules from the Profile settings; same options and wording as iOS and web. */
     private fun preferenceRules(): List<String> = buildList {

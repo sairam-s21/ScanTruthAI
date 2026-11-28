@@ -427,26 +427,6 @@ fun ProfileScreen(
                 )
             }
         }
-
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    imageVector = AppIcons.Lock,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(14.dp)
-                )
-                Text(
-                    text = "ScanTruthAI v1.0 · privacy-first by design",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(start = 8.dp)
-                )
-            }
-        }
     }
 }
 
@@ -482,79 +462,44 @@ private fun SignedOutCard(
     isSigningIn: Boolean,
     onGoogleSignIn: () -> Unit
 ) {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(26.dp))
-            .background(
-                Brush.linearGradient(
-                    colors = listOf(Brand.Deep, Brand.Primary),
-                    start = androidx.compose.ui.geometry.Offset.Zero,
-                    end = androidx.compose.ui.geometry.Offset(900f, 700f)
-                )
-            )
-    ) {
-        Column(modifier = Modifier.padding(22.dp)) {
+    AppCard {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                AvatarPlaceholder(size = 64)
+                Box(
+                    modifier = Modifier
+                        .size(56.dp)
+                        .clip(CircleShape)
+                        .background(Brand.Soft),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = AppIcons.Person,
+                        contentDescription = null,
+                        tint = Brand.Primary,
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
                 Column(modifier = Modifier.padding(start = 14.dp).weight(1f)) {
                     Text(
-                        text = "You are browsing as a guest",
-                        style = MaterialTheme.typography.titleMedium,
+                        text = "You are not signed in",
+                        fontSize = 18.sp,
                         fontWeight = FontWeight.Bold,
-                        color = Color.White
+                        color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "Sign in to keep your health context and scan history attached to your own account.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Brand.TextOnDeepMuted,
+                        text = "Sign in to save your health profile and scan history to your account, " +
+                            "and see them on every device.",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 4.dp)
                     )
                 }
             }
-
-            Button(
-                onClick = onGoogleSignIn,
+            FilledActionButton(
+                text = if (isSigningIn) "Signing in..." else "Sign in with Google",
+                icon = if (isSigningIn) null else AppIcons.Lock,
                 enabled = !isSigningIn,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 20.dp)
-                    .height(52.dp),
-                shape = RoundedCornerShape(16.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color.White,
-                    contentColor = Brand.Deep
-                ),
-                elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp)
-            ) {
-                if (isSigningIn) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(18.dp),
-                        strokeWidth = 2.dp,
-                        color = Brand.Primary
-                    )
-                    Text(
-                        text = "Signing you in…",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(start = 10.dp)
-                    )
-                } else {
-                    GoogleGlyph()
-                    Text(
-                        text = "Continue with Google",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(start = 10.dp)
-                    )
-                }
-            }
-
-            Text(
-                text = "You stay signed out until you pick an account.",
-                style = MaterialTheme.typography.bodySmall,
-                color = Brand.TextOnDeepMuted,
-                modifier = Modifier.padding(top = 10.dp)
+                onClick = onGoogleSignIn
             )
         }
     }

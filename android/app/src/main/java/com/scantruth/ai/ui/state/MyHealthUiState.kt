@@ -10,8 +10,8 @@ import com.google.firebase.auth.auth
 import com.scantruth.ai.FirestoreRepository
 import com.scantruth.ai.FirestoreRepository.StoreResult
 import com.scantruth.ai.HybridAIService
-import com.scantruth.ai.model.HealthContextSuggestion
 import com.scantruth.ai.model.HealthItemValidation
+import com.scantruth.ai.model.MedicalExtraction
 import com.scantruth.ai.model.MedicalProfile
 import com.scantruth.ai.model.ReportRecord
 import kotlinx.coroutines.CancellationException
@@ -19,22 +19,32 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
-/** The four lists of the stored health profile, in the order My Health shows them. */
-enum class ProfileCategory(val title: String, val singular: String) {
-    CONDITIONS("Diseases", "disease"),
-    ALLERGIES("Allergies", "allergy"),
-    MEDICATIONS("Medications", "medication"),
-    DIETARY_RESTRICTIONS("Dietary Restrictions", "dietary restriction"),
-    HEALTH_NOTES("Health Notes", "health note");
+/** The lists of the health profile, with the same names and copy as the website. */
+enum class ProfileCategory(
+    val title: String,
+    val singular: String,
+    val addTitle: String,
+    val placeholder: String
+) {
+    CONDITIONS("Known Conditions", "medical condition", "Add a condition", "e.g. Hypertension"),
+    ALLERGIES("Allergies", "allergy", "Add allergy", "e.g. Peanuts"),
+    MEDICATIONS("Medications", "medication", "Add medication", "e.g. Metformin 500 mg"),
+    DIETARY_RESTRICTIONS("Dietary restrictions", "dietary restriction", "Add dietary restriction", "e.g. Low sodium"),
+    HEALTH_NOTES("Health notes", "health note", "Add a note", "Add a note");
 
     companion object {
         val ACTIVE_CATEGORIES = listOf(CONDITIONS, ALLERGIES, MEDICATIONS, DIETARY_RESTRICTIONS)
+
+        /** The three cards under "Health Context"; conditions have their own section. */
+        val CONTEXT_CARDS = listOf(ALLERGIES, MEDICATIONS, DIETARY_RESTRICTIONS)
     }
 }
 
 /**
- * My Health state: the stored profile, its editable lists, saved report metadata and the
- * free-text health note. Writes go straight to Firestore for the signed-in user.
+ * My Health state: the health profile, saved report titles and the status line.
+ *
+ * Signed in, every change is written to Firestore. Signed out, changes live only in this
+ * object for the session (as on the website) and are dropped when the app closes.
  */
 @Stable
 class MyHealthUiState {
@@ -51,10 +61,16 @@ class MyHealthUiState {
     var reports by mutableStateOf<List<ReportRecord>>(emptyList())
         private set
 
-    var error by mutableStateOf<String?>(null)
+    /** Report titles added while signed out; session only. */
+    var guestReportTitles by mutableStateOf<List<String>>(emptyList())
         private set
 
-    var isSavingProfile by mutableStateOf(false)
+    /** One status line under the title, like the website's status banner. */
+    var status by mutableStateOf<String?>(null)
+        private set
+
+    /** True while an added item is being checked. */
+    var isProcessing by mutableStateOf(false)
         private set
 
     var noteDraft by mutableStateOf("")
@@ -63,26 +79,20 @@ class MyHealthUiState {
     var noteMessage by mutableStateOf<String?>(null)
         private set
 
-    var isSavingNote by mutableStateOf(false)
+    /** Categories whose chips currently show remove buttons. */
+    var editing by mutableStateOf<Set<ProfileCategory>>(emptySet())
         private set
 
-    var aiAssistantInput by mutableStateOf("")
+    /** Set by Home's "Analyse Medical Report"; My Health opens the file picker once. */
+    var reportPickerRequested by mutableStateOf(false)
         private set
 
-    var isAiAssistantAnalyzing by mutableStateOf(false)
-        private set
+    val reportTitles: List<String>
+        get() = if (isSignedIn) reports.map { it.reportTitle } else guestReportTitles
 
-    var aiAssistantError by mutableStateOf<String?>(null)
-        private set
-
-    var aiAssistantClarification by mutableStateOf<String?>(null)
-        private set
-
-    var aiAssistantSuggestion by mutableStateOf<HealthContextSuggestion?>(null)
-        private set
-
-    var aiAssistantSuccessMessage by mutableStateOf<String?>(null)
-        private set
+    val detailCount: Int
+        get() = profile.conditions.size + profile.allergies.size +
+            profile.medications.size + profile.dietaryRestrictions.size
 
     private var listener: FirebaseAuth.AuthStateListener? = null
     private var lastObservedUid: String? = runCatching { Firebase.auth.currentUser?.uid }.getOrNull()
@@ -90,37 +100,23 @@ class MyHealthUiState {
 
     fun start(scope: CoroutineScope) {
         val auth = runCatching { Firebase.auth }.getOrNull() ?: return
-        if (listener == null) {
-            listener = FirebaseAuth.AuthStateListener { firebaseAuth ->
-                val user = firebaseAuth.currentUser
-                val newUid = user?.uid
-                val uidChanged = newUid != lastObservedUid
-                lastObservedUid = newUid
-                isSignedIn = user != null
-
-                if (user != null) {
-                    if (uidChanged || isLoading) {
-                        load(scope)
-                    }
-                } else {
-                    loadJob?.cancel()
-                    loadJob = null
-                    profile = MedicalProfile()
-                    reports = emptyList()
-                    noteDraft = ""
-                    noteMessage = null
-                    aiAssistantInput = ""
-                    isAiAssistantAnalyzing = false
-                    aiAssistantError = null
-                    aiAssistantClarification = null
-                    aiAssistantSuggestion = null
-                    aiAssistantSuccessMessage = null
-                    error = null
-                    isLoading = false
-                }
+        if (listener != null) return
+        listener = FirebaseAuth.AuthStateListener { firebaseAuth ->
+            val user = firebaseAuth.currentUser
+            val newUid = user?.uid
+            val uidChanged = newUid != lastObservedUid
+            lastObservedUid = newUid
+            isSignedIn = user != null
+            if (user != null) {
+                if (uidChanged || isLoading) load(scope)
+            } else if (uidChanged) {
+                // Signed out: nothing from the previous account stays on screen.
+                clearAll()
+            } else {
+                isLoading = false
             }
-            auth.addAuthStateListener(listener!!)
         }
+        auth.addAuthStateListener(listener!!)
     }
 
     fun stop() {
@@ -132,31 +128,30 @@ class MyHealthUiState {
     fun load(scope: CoroutineScope) {
         isSignedIn = FirestoreRepository.isSignedIn()
         if (!isSignedIn) {
+            // Guest data is session-only and is kept until sign-out or app close.
             loadJob?.cancel()
             loadJob = null
             isLoading = false
-            profile = MedicalProfile()
             reports = emptyList()
             return
         }
         loadJob?.cancel()
         loadJob = scope.launch {
             isLoading = true
-            error = null
-
             when (val stored = FirestoreRepository.loadMedicalProfile()) {
                 is StoreResult.Success -> profile = stored.value ?: MedicalProfile()
-                is StoreResult.Failure -> error = stored.message
+                is StoreResult.Failure -> status = stored.message
             }
-
             when (val storedReports = FirestoreRepository.loadReports()) {
                 is StoreResult.Success -> reports = storedReports.value
-                is StoreResult.Failure ->
-                    if (!storedReports.notSignedIn) error = error ?: storedReports.message
+                is StoreResult.Failure -> if (!storedReports.notSignedIn) status = status ?: storedReports.message
             }
-
             isLoading = false
         }
+    }
+
+    fun showStatus(message: String?) {
+        status = message
     }
 
     fun updateNoteDraft(value: String) {
@@ -164,334 +159,109 @@ class MyHealthUiState {
         noteMessage = null
     }
 
-    fun saveNote(scope: CoroutineScope) {
-        val note = noteDraft.trim()
-        if (note.isEmpty() || isSavingNote) return
-        isSavingNote = true
-        noteMessage = null
-
-        scope.launch {
-            val updated = profile.withHealthNote(note)
-            when (val result = FirestoreRepository.saveMedicalProfile(updated)) {
-                is StoreResult.Success -> {
-                    profile = updated
-                    noteDraft = ""
-                    noteMessage = "Health note saved to your profile."
-                }
-
-                is StoreResult.Failure -> noteMessage = result.message
-            }
-            isSavingNote = false
-        }
+    fun requestReportPicker() {
+        reportPickerRequested = true
     }
 
-    /** Status line for hand-added items: "Checking …", a rejection, or a save confirmation. */
-    var itemMessage by mutableStateOf<String?>(null)
-        private set
+    fun onReportPickerOpened() {
+        reportPickerRequested = false
+    }
 
-    var isValidatingItem by mutableStateOf(false)
-        private set
+    fun itemsFor(category: ProfileCategory): List<String> = profile.itemsFor(category)
 
-    fun addItem(scope: CoroutineScope, category: ProfileCategory, value: String) {
-        validateItems(scope, category, listOf(value)) { valid ->
-            val updated = valid.fold(profile) { acc, item -> acc.withItem(category, item) }
-            if (updated != profile) persist(scope, updated)
-        }
+    fun isEditing(category: ProfileCategory): Boolean = category in editing
+
+    fun toggleEditing(category: ProfileCategory) {
+        editing = if (category in editing) editing - category else editing + category
     }
 
     /**
      * Only real entries reach the health context; junk would skew every scan verdict.
-     * Each item gets the cheap local check, then an AI check (Gemini Nano first, cloud only
-     * if Nano cannot answer). [onValid] receives the normalised names that passed.
+     * The cheap local check runs first, then an AI check.
      */
-    fun validateItems(
-        scope: CoroutineScope,
-        category: ProfileCategory,
-        values: List<String>,
-        onValid: (List<String>) -> Unit
-    ) {
-        val items = values.map { it.trim() }.filter { it.isNotEmpty() }
-        if (items.isEmpty() || isValidatingItem) return
-        val rejected = { item: String ->
-            "\"$item\" doesn't look like a ${category.singular}. Check the spelling and try again."
-        }
-        items.firstOrNull { !HealthItemValidation.passesBasicCheck(it) }?.let {
-            itemMessage = rejected(it)
+    fun addItem(scope: CoroutineScope, category: ProfileCategory, value: String) {
+        val item = value.trim()
+        if (item.isEmpty() || isProcessing) return
+        val rejected = "\"$item\" doesn't look like a ${category.singular}. Check the spelling and try again."
+        if (!HealthItemValidation.passesBasicCheck(item)) {
+            status = rejected
             return
         }
 
-        isValidatingItem = true
-        itemMessage = if (items.size == 1) "Checking \"${items[0]}\"…" else "Checking ${items.size} items…"
+        isProcessing = true
+        status = "Checking \"$item\"..."
         scope.launch {
             try {
-                val accepted = mutableListOf<String>()
-                for (item in items) {
-                    val result = try {
-                        HybridAIService.validateHealthItem(item, category.singular)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        itemMessage = "Couldn't verify \"$item\" right now, so it wasn't added. Try again."
-                        return@launch
-                    }
-                    if (!result.isValid) {
-                        itemMessage = rejected(item)
-                        return@launch
-                    }
-                    val normalized = result.normalizedName.orEmpty()
-                    accepted += if (HealthItemValidation.passesBasicCheck(normalized)) normalized else item
+                val result = try {
+                    HybridAIService.validateHealthItem(item, category.singular)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    status = "Couldn't verify \"$item\" right now, so it wasn't added. Try again."
+                    return@launch
                 }
-                itemMessage = "Added ${accepted.joinToString(", ")}."
-                onValid(accepted)
+                if (!result.isValid) {
+                    status = rejected
+                    return@launch
+                }
+                val normalized = result.normalizedName.orEmpty().trim()
+                val finalItem = if (HealthItemValidation.passesBasicCheck(normalized)) normalized else item
+                val updated = profile.withItem(category, finalItem)
+
+                if (!isSignedIn) {
+                    profile = updated
+                    status = "Added for this session only. Sign in to save it to your account."
+                    return@launch
+                }
+                when (val saved = FirestoreRepository.saveMedicalProfile(updated)) {
+                    is StoreResult.Success -> {
+                        profile = updated
+                        status = "Saved to your account."
+                    }
+                    is StoreResult.Failure -> status = "Saving failed: ${saved.message}"
+                }
             } finally {
-                isValidatingItem = false
+                isProcessing = false
             }
         }
     }
 
     fun removeItem(scope: CoroutineScope, category: ProfileCategory, value: String) {
-        persist(scope, profile.withoutItem(category, value))
-    }
-
-    fun itemsFor(category: ProfileCategory): List<String> = profile.itemsFor(category)
-
-    /**
-     * Replaces one category in a single write, used by the batch "Update My Conditions"
-     * editor so the profile is not written on every keystroke.
-     */
-    fun updateCategory(
-        scope: CoroutineScope,
-        category: ProfileCategory,
-        values: List<String>
-    ) {
-        val cleaned = values.map { it.trim() }
-            .filter { it.isNotEmpty() }
-            .distinctBy { it.lowercase() }
-            .take(MedicalProfile.MAX_ITEMS_PER_LIST)
-        val updated = profile.withItems(category, cleaned)
-        if (updated == profile) return
-        persist(scope, updated)
-    }
-
-    fun updateAiAssistantInput(text: String) {
-        aiAssistantInput = text
-        aiAssistantError = null
-        aiAssistantClarification = null
-        aiAssistantSuccessMessage = null
-    }
-
-    fun clearAiAssistant() {
-        aiAssistantInput = ""
-        aiAssistantError = null
-        aiAssistantClarification = null
-        aiAssistantSuggestion = null
-        aiAssistantSuccessMessage = null
-    }
-
-    fun dismissAiAssistantSuggestion() {
-        aiAssistantSuggestion = null
-        aiAssistantClarification = null
-        aiAssistantError = null
-    }
-
-    internal fun setAiAssistantSuggestionForTesting(suggestion: HealthContextSuggestion?) {
-        aiAssistantSuggestion = suggestion
-    }
-
-    internal fun setAiAssistantClarificationForTesting(clarification: String?) {
-        aiAssistantClarification = clarification
-    }
-
-    fun analyzeHealthStatement(scope: CoroutineScope, statementOverride: String? = null) {
-        val statement = (statementOverride ?: aiAssistantInput).trim()
-        if (statement.isEmpty() || isAiAssistantAnalyzing) return
+        if (itemsFor(category).size <= 1) editing = editing - category
+        val updated = profile.withoutItem(category, value)
         if (!isSignedIn) {
-            aiAssistantError = "Sign in with Google to organize your health profile."
+            profile = updated
+            status = "Removed for this session only. Sign in to keep your account in sync."
             return
         }
-
-        isAiAssistantAnalyzing = true
-        aiAssistantError = null
-        aiAssistantClarification = null
-        aiAssistantSuccessMessage = null
-        aiAssistantSuggestion = null
-
         scope.launch {
-            try {
-                val plan = HybridAIService.classifyHealthActions(statement, profile)
-                if (plan.isAmbiguous) {
-                    aiAssistantClarification = plan.clarificationNeeded
-                        ?: plan.actions.firstOrNull { it.clarificationNeeded != null }?.clarificationNeeded
-                        ?: "Please clarify which item you are referring to."
-                } else if (plan.actions.isNotEmpty()) {
-                    when (val res = FirestoreRepository.applyHealthActions(plan.actions)) {
-                        is StoreResult.Success -> {
-                            val (updatedProfile, changes) = res.value
-                            profile = updatedProfile
-                            if (changes.isNotEmpty()) {
-                                aiAssistantSuccessMessage = buildString {
-                                    appendLine("Updated your health profile:")
-                                    changes.forEach { change ->
-                                        appendLine("- $change")
-                                    }
-                                }.trimEnd()
-                            } else {
-                                aiAssistantSuccessMessage = "Profile is already up to date."
-                            }
-                            aiAssistantInput = ""
-                        }
-                        is StoreResult.Failure -> {
-                            aiAssistantError = res.message
-                        }
-                    }
-                } else {
-                    aiAssistantError = "No health details or actions were identified from your statement."
-                }
-            } catch (e: Exception) {
-                aiAssistantError = e.message ?: "Could not organize health details. Please check your connection."
-            } finally {
-                isAiAssistantAnalyzing = false
-            }
-        }
-    }
-
-    fun removeSuggestionItem(category: ProfileCategory, item: String) {
-        val current = aiAssistantSuggestion ?: return
-        aiAssistantSuggestion = when (category) {
-            ProfileCategory.CONDITIONS -> current.copy(
-                conditions = current.conditions.filterNot { it.equals(item, ignoreCase = true) }
-            )
-            ProfileCategory.ALLERGIES -> current.copy(
-                allergies = current.allergies.filterNot { it.equals(item, ignoreCase = true) }
-            )
-            ProfileCategory.MEDICATIONS -> current.copy(
-                medications = current.medications.filterNot { it.equals(item, ignoreCase = true) }
-            )
-            ProfileCategory.DIETARY_RESTRICTIONS -> current.copy(
-                dietaryRestrictions = current.dietaryRestrictions.filterNot { it.equals(item, ignoreCase = true) }
-            )
-            ProfileCategory.HEALTH_NOTES -> current.copy(
-                healthNotes = current.healthNotes.filterNot { it.equals(item, ignoreCase = true) }
-            )
-        }
-    }
-
-    fun removeSuggestionNote(note: String) {
-        removeSuggestionItem(ProfileCategory.HEALTH_NOTES, note)
-    }
-
-    fun updateSuggestionItem(category: ProfileCategory, oldItem: String, newItem: String) {
-        val trimmed = newItem.trim()
-        if (trimmed.isEmpty()) {
-            removeSuggestionItem(category, oldItem)
-            return
-        }
-        val current = aiAssistantSuggestion ?: return
-        aiAssistantSuggestion = when (category) {
-            ProfileCategory.CONDITIONS -> current.copy(
-                conditions = current.conditions.map { if (it.equals(oldItem, ignoreCase = true)) trimmed else it }.distinctBy { it.lowercase() }
-            )
-            ProfileCategory.ALLERGIES -> current.copy(
-                allergies = current.allergies.map { if (it.equals(oldItem, ignoreCase = true)) trimmed else it }.distinctBy { it.lowercase() }
-            )
-            ProfileCategory.MEDICATIONS -> current.copy(
-                medications = current.medications.map { if (it.equals(oldItem, ignoreCase = true)) trimmed else it }.distinctBy { it.lowercase() }
-            )
-            ProfileCategory.DIETARY_RESTRICTIONS -> current.copy(
-                dietaryRestrictions = current.dietaryRestrictions.map { if (it.equals(oldItem, ignoreCase = true)) trimmed else it }.distinctBy { it.lowercase() }
-            )
-            ProfileCategory.HEALTH_NOTES -> current.copy(
-                healthNotes = current.healthNotes.map { if (it.equals(oldItem, ignoreCase = true)) trimmed else it }.distinctBy { it.lowercase() }
-            )
-        }
-    }
-
-    fun updateSuggestionNote(oldNote: String, newNote: String) {
-        updateSuggestionItem(ProfileCategory.HEALTH_NOTES, oldNote, newNote)
-    }
-
-    fun moveSuggestionItem(
-        item: String,
-        fromCategory: ProfileCategory,
-        toCategory: ProfileCategory
-    ) {
-        if (fromCategory == toCategory) return
-        val current = aiAssistantSuggestion ?: return
-        val afterRemoval = when (fromCategory) {
-            ProfileCategory.CONDITIONS -> current.copy(
-                conditions = current.conditions.filterNot { it.equals(item, ignoreCase = true) }
-            )
-            ProfileCategory.ALLERGIES -> current.copy(
-                allergies = current.allergies.filterNot { it.equals(item, ignoreCase = true) }
-            )
-            ProfileCategory.MEDICATIONS -> current.copy(
-                medications = current.medications.filterNot { it.equals(item, ignoreCase = true) }
-            )
-            ProfileCategory.DIETARY_RESTRICTIONS -> current.copy(
-                dietaryRestrictions = current.dietaryRestrictions.filterNot { it.equals(item, ignoreCase = true) }
-            )
-            ProfileCategory.HEALTH_NOTES -> current.copy(
-                healthNotes = current.healthNotes.filterNot { it.equals(item, ignoreCase = true) }
-            )
-        }
-        aiAssistantSuggestion = when (toCategory) {
-            ProfileCategory.CONDITIONS -> afterRemoval.copy(
-                conditions = (afterRemoval.conditions + item).distinctBy { it.lowercase() }
-            )
-            ProfileCategory.ALLERGIES -> afterRemoval.copy(
-                allergies = (afterRemoval.allergies + item).distinctBy { it.lowercase() }
-            )
-            ProfileCategory.MEDICATIONS -> afterRemoval.copy(
-                medications = (afterRemoval.medications + item).distinctBy { it.lowercase() }
-            )
-            ProfileCategory.DIETARY_RESTRICTIONS -> afterRemoval.copy(
-                dietaryRestrictions = (afterRemoval.dietaryRestrictions + item).distinctBy { it.lowercase() }
-            )
-            ProfileCategory.HEALTH_NOTES -> afterRemoval.copy(
-                healthNotes = (afterRemoval.healthNotes + item).distinctBy { it.lowercase() }
-            )
-        }
-    }
-
-    fun saveAiSuggestions(scope: CoroutineScope) {
-        val suggestion = aiAssistantSuggestion ?: return
-        if (suggestion.isEmpty) {
-            aiAssistantError = "No suggestions to save."
-            return
-        }
-        if (isSavingProfile) return
-        isSavingProfile = true
-        aiAssistantError = null
-
-        scope.launch {
-            when (val result = FirestoreRepository.mergeHealthContext(suggestion)) {
+            when (val saved = FirestoreRepository.saveMedicalProfile(updated)) {
                 is StoreResult.Success -> {
-                    profile = result.value
-                    val count = suggestion.totalCount
-                    aiAssistantSuccessMessage = "Successfully added $count item" + (if (count == 1) "" else "s") + " to your health profile!"
-                    aiAssistantSuggestion = null
-                    aiAssistantInput = ""
-                    noteDraft = ""
+                    profile = updated
+                    status = "Removed \"$value\"."
                 }
-                is StoreResult.Failure -> {
-                    aiAssistantError = result.message
-                }
+                is StoreResult.Failure -> status = "Removing it from your account failed: ${saved.message}"
             }
-            isSavingProfile = false
         }
     }
 
-    private fun persist(scope: CoroutineScope, updated: MedicalProfile) {
-        if (isSavingProfile) return
-        isSavingProfile = true
-        error = null
-        scope.launch {
-            when (val result = FirestoreRepository.saveMedicalProfile(updated)) {
-                is StoreResult.Success -> profile = updated
-                is StoreResult.Failure -> error = result.message
-            }
-            isSavingProfile = false
-        }
+    /** Signed out: merges an approved extraction into the session-only profile. */
+    fun applyGuestExtraction(extraction: MedicalExtraction, reportTitle: String?) {
+        profile = profile.mergedWith(extraction.copy(healthNotes = emptyList()))
+        if (reportTitle != null) guestReportTitles = guestReportTitles + reportTitle
+    }
+
+    private fun clearAll() {
+        loadJob?.cancel()
+        loadJob = null
+        profile = MedicalProfile()
+        reports = emptyList()
+        guestReportTitles = emptyList()
+        noteDraft = ""
+        noteMessage = null
+        status = null
+        editing = emptySet()
+        isLoading = false
     }
 }
 
@@ -503,37 +273,20 @@ private fun MedicalProfile.itemsFor(category: ProfileCategory): List<String> = w
     ProfileCategory.HEALTH_NOTES -> healthNotes
 }
 
+private fun MedicalProfile.withItems(category: ProfileCategory, values: List<String>): MedicalProfile =
+    when (category) {
+        ProfileCategory.CONDITIONS -> copy(conditions = values)
+        ProfileCategory.ALLERGIES -> copy(allergies = values)
+        ProfileCategory.MEDICATIONS -> copy(medications = values)
+        ProfileCategory.DIETARY_RESTRICTIONS -> copy(dietaryRestrictions = values)
+        ProfileCategory.HEALTH_NOTES -> copy(healthNotes = values)
+    }
+
 private fun MedicalProfile.withItem(category: ProfileCategory, value: String): MedicalProfile {
     val existing = itemsFor(category)
     if (existing.any { it.equals(value, ignoreCase = true) }) return this
-    val updated = existing + value
-    return when (category) {
-        ProfileCategory.CONDITIONS -> copy(conditions = updated)
-        ProfileCategory.ALLERGIES -> copy(allergies = updated)
-        ProfileCategory.MEDICATIONS -> copy(medications = updated)
-        ProfileCategory.DIETARY_RESTRICTIONS -> copy(dietaryRestrictions = updated)
-        ProfileCategory.HEALTH_NOTES -> copy(healthNotes = updated)
-    }
+    return withItems(category, (existing + value).take(MedicalProfile.MAX_ITEMS_PER_LIST))
 }
 
-private fun MedicalProfile.withItems(
-    category: ProfileCategory,
-    values: List<String>
-): MedicalProfile = when (category) {
-    ProfileCategory.CONDITIONS -> copy(conditions = values)
-    ProfileCategory.ALLERGIES -> copy(allergies = values)
-    ProfileCategory.MEDICATIONS -> copy(medications = values)
-    ProfileCategory.DIETARY_RESTRICTIONS -> copy(dietaryRestrictions = values)
-    ProfileCategory.HEALTH_NOTES -> copy(healthNotes = values)
-}
-
-private fun MedicalProfile.withoutItem(category: ProfileCategory, value: String): MedicalProfile {
-    val updated = itemsFor(category).filterNot { it.equals(value, ignoreCase = true) }
-    return when (category) {
-        ProfileCategory.CONDITIONS -> copy(conditions = updated)
-        ProfileCategory.ALLERGIES -> copy(allergies = updated)
-        ProfileCategory.MEDICATIONS -> copy(medications = updated)
-        ProfileCategory.DIETARY_RESTRICTIONS -> copy(dietaryRestrictions = updated)
-        ProfileCategory.HEALTH_NOTES -> copy(healthNotes = updated)
-    }
-}
+private fun MedicalProfile.withoutItem(category: ProfileCategory, value: String): MedicalProfile =
+    withItems(category, itemsFor(category).filterNot { it.equals(value, ignoreCase = true) })

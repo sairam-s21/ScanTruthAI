@@ -1,7 +1,6 @@
 package com.scantruth.ai.ui
 
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
@@ -27,12 +26,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.google.firebase.Firebase
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.auth
+import com.scantruth.ai.FirestoreRepository
+import com.scantruth.ai.model.MedicalProfile
 import com.scantruth.ai.ui.components.AppIcons
 import com.scantruth.ai.ui.navigation.ScanFrameIcon
 import com.scantruth.ai.ui.navigation.ScanTruthDestination
@@ -75,6 +78,18 @@ fun ScanTruthAppShell() {
         ingredientState.onScanSaved = {
             homeState.refresh(shellScope)
         }
+        reportState.onGuestExtraction = { extraction, title ->
+            healthState.applyGuestExtraction(extraction, title)
+        }
+        // Signed in, scans use the stored profile; signed out, the session-only one.
+        ingredientState.profileSource = {
+            if (FirestoreRepository.isSignedIn()) {
+                (FirestoreRepository.loadMedicalProfile() as? FirestoreRepository.StoreResult.Success)?.value
+                    ?: MedicalProfile()
+            } else {
+                healthState.profile
+            }
+        }
 
         val auth = Firebase.auth
         lastUid[0] = auth.currentUser?.uid
@@ -92,6 +107,7 @@ fun ScanTruthAppShell() {
             homeState.stop()
             healthState.stop()
             reportState.onReportSaved = null
+            reportState.onGuestExtraction = null
             ingredientState.onScanSaved = null
         }
     }
@@ -131,7 +147,7 @@ private fun ScanTruthBottomBar(
 ) {
     Surface(
         color = MaterialTheme.colorScheme.surface,
-        shadowElevation = 14.dp
+        shadowElevation = 0.dp
     ) {
         Column(modifier = Modifier.navigationBarsPadding()) {
             HorizontalDivider(
@@ -141,7 +157,8 @@ private fun ScanTruthBottomBar(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 10.dp, vertical = 8.dp)
+                    .padding(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 14.dp),
+                horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(6.dp)
             ) {
                 ScanTruthDestination.tabs.forEach { route ->
                     val selected = currentRoute == route
@@ -174,19 +191,15 @@ private fun NavigationPill(
         targetValue = if (selected) {
             MaterialTheme.colorScheme.onPrimary
         } else {
-            MaterialTheme.colorScheme.onSurfaceVariant
+            Color(0xFF99ADA3)
         },
         label = "navContent"
     )
-    val verticalPadding by animateDpAsState(
-        targetValue = if (selected) 9.dp else 7.dp,
-        label = "navPadding"
-    )
+    val verticalPadding = 9.dp
 
     Column(
         modifier = modifier
-            .padding(horizontal = 3.dp)
-            .clip(RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(22.dp))
             .background(container)
             .clickable(enabled = !selected, onClick = onClick)
             .padding(vertical = verticalPadding),
@@ -200,7 +213,8 @@ private fun NavigationPill(
         )
         Text(
             text = label,
-            style = MaterialTheme.typography.labelSmall,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
             color = content,
             modifier = Modifier.padding(top = 3.dp)
         )

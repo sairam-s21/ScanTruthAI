@@ -13,30 +13,30 @@ import androidx.compose.ui.graphics.Color
  */
 object Brand {
     /** Primary — deep forest green. */
-    val Primary = Color(0xFF145B46)
+    val Primary = Color(0xFF144D3D)
 
     /** Deep green for hero cards and the selected navigation pill. */
-    val Deep = Color(0xFF0B3F32)
+    val Deep = Color(0xFF0F382B)
 
     /** Secondary green for supporting highlights. */
     val Secondary = Color(0xFF218568)
 
     /** Soft green for tinted containers, chips and quiet banners. */
-    val Soft = Color(0xFFE8F2ED)
+    val Soft = Color(0xFFE8F5EE)
 
     /** A slightly lighter soft green for nested surfaces on soft green. */
     val SoftRaised = Color(0xFFF1F8F4)
 
-    val Background = Color(0xFFF8F8F8)
+    val Background = Color(0xFFF7FAF8)
     val Card = Color(0xFFFFFFFF)
 
-    val TextPrimary = Color(0xFF172A24)
-    val TextSecondary = Color(0xFF71847B)
+    val TextPrimary = Color(0xFF1A2921)
+    val TextSecondary = Color(0xFF667A70)
     val TextOnDeep = Color(0xFFF2F8F5)
     val TextOnDeepMuted = Color(0xFFB9D3C7)
 
     val Divider = Color(0xFFE5EDE8)
-    val Outline = Color(0xFFD8E4DC)
+    val Outline = Color(0xFFBADECB)
 
     /** Caution band for scores and warnings. */
     val Warning = Color(0xFF9A6414)

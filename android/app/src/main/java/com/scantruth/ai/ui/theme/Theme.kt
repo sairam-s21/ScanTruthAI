@@ -1,6 +1,5 @@
 package com.scantruth.ai.ui.theme
 
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
@@ -82,13 +81,14 @@ val ScanTruthShapes = Shapes(
     extraSmall = RoundedCornerShape(8.dp),
     small = RoundedCornerShape(12.dp),
     medium = RoundedCornerShape(16.dp),
-    large = RoundedCornerShape(22.dp),
+    large = RoundedCornerShape(20.dp),
     extraLarge = RoundedCornerShape(28.dp)
 )
 
 @Composable
 fun ScanTruthTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
+    // Light only, like the website and the iOS app.
+    darkTheme: Boolean = false,
     content: @Composable () -> Unit
 ) {
     MaterialTheme(

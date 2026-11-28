@@ -13,7 +13,6 @@ import com.scantruth.ai.FirestoreRepository.StoreResult
 import com.scantruth.ai.HybridAIService
 import com.scantruth.ai.HybridAIService.NanoAvailability
 import com.scantruth.ai.OcrException
-import com.scantruth.ai.domain.IngredientParser
 import com.scantruth.ai.domain.IngredientWorkflow
 import com.scantruth.ai.model.AiMode
 import com.scantruth.ai.model.IngredientAnalysis
@@ -25,24 +24,22 @@ import kotlinx.coroutines.Dispatchers
 sealed interface IngredientStep {
     data object Idle : IngredientStep
 
-    /** Reading a label with on-device OCR or waiting on the AI call. */
+    /** Reading a label with OCR or waiting on the AI call. */
     data class Working(val message: String) : IngredientStep
 
-    /** OCR finished: the ingredient list is on screen and awaiting confirmation. */
+    /** An ingredient list is on screen and can be edited or analysed. */
     data object Detected : IngredientStep
 
+    /** An analysis result is ready to show. */
     data object Ready : IngredientStep
-    data class Failed(val message: String) : IngredientStep
 }
 
 /**
- * The ingredient flow: label OCR → ingredient list the user can correct → AI analysis
- * → save to scan history.
+ * The Scan flow, as on the website: read a label (or type the list) → edit the detected
+ * ingredients → choose the engine → analyse → result sheet → save to scan history.
  *
- * OCR and analysis are separate steps so the Scan screen can show what was detected,
- * accept manual corrections, and let the user choose the engine before anything is sent.
- * Work runs in a scope owned by this holder rather than by the screen, so opening the
- * result screen does not cancel the AI call or the Firestore save.
+ * Work runs in a scope owned by this holder rather than by the screen, so leaving the Scan
+ * tab does not cancel the AI call or the Firestore save.
  */
 @Stable
 class IngredientAnalysisState(
@@ -57,22 +54,42 @@ class IngredientAnalysisState(
     var step by mutableStateOf<IngredientStep>(IngredientStep.Idle)
         private set
 
-    var sourceName by mutableStateOf("")
-        private set
-
     var ingredients by mutableStateOf<List<String>>(emptyList())
         private set
 
     var analysis by mutableStateOf<IngredientAnalysis?>(null)
         private set
 
+    /** Status of the last label read, shown in the Detected Ingredients card. */
+    var ocrMessage by mutableStateOf<String?>(null)
+        private set
+
+    /** Shown under the Analyze button: a failed analysis, or a failed save. */
+    var analysisError by mutableStateOf<String?>(null)
+        private set
+
+    var isReadingLabel by mutableStateOf(false)
+        private set
+
+    var isAnalyzing by mutableStateOf(false)
+        private set
+
     /** Notified when an ingredient analysis has been saved to scan history. */
     var onScanSaved: (() -> Unit)? = null
 
-    var saveNote by mutableStateOf<String?>(null)
-        private set
+    /**
+     * Health profile used for the analysis. The shell points this at My Health, so a
+     * signed-out visitor's session-only profile is used too.
+     */
+    var profileSource: suspend () -> MedicalProfile = {
+        when (val stored = FirestoreRepository.loadMedicalProfile()) {
+            is StoreResult.Success -> stored.value ?: MedicalProfile()
+            is StoreResult.Failure -> MedicalProfile()
+        }
+    }
 
-    var usedProfile by mutableStateOf(MedicalProfile())
+    /** Kept for callers that show where a save landed. */
+    var saveNote by mutableStateOf<String?>(null)
         private set
 
     var nanoStatus by mutableStateOf<NanoAvailability?>(null)
@@ -87,9 +104,7 @@ class IngredientAnalysisState(
     var downloadFraction by mutableStateOf<Float?>(null)
         private set
 
-    val isBusy: Boolean get() = step is IngredientStep.Working
-
-    val hasLabel: Boolean get() = sourceName.isNotBlank()
+    val isBusy: Boolean get() = isReadingLabel || isAnalyzing
 
     fun setMode(mode: AiMode) {
         aiMode = mode
@@ -113,16 +128,13 @@ class IngredientAnalysisState(
         downloadFraction = null
         work.launch {
             try {
-                val result = HybridAIService.downloadNano { progress ->
-                    downloadFraction = progress.fraction
-                }
-                if (result.isFailure) {
-                    nanoStatus = NanoAvailability.Unsupported(
-                        result.exceptionOrNull()?.message
-                            ?: "Gemini Nano could not be downloaded."
+                val result = HybridAIService.downloadNano { progress -> downloadFraction = progress.fraction }
+                nanoStatus = if (result.isFailure) {
+                    NanoAvailability.Unsupported(
+                        result.exceptionOrNull()?.message ?: "Gemini Nano could not be downloaded."
                     )
                 } else {
-                    nanoStatus = HybridAIService.nanoAvailability()
+                    HybridAIService.nanoAvailability()
                 }
             } finally {
                 isDownloadingNano = false
@@ -130,149 +142,113 @@ class IngredientAnalysisState(
         }
     }
 
-    /** Reads a label with on-device OCR only. Nothing is sent to any model here. */
-    fun readLabel(
-        context: Context,
-        uri: Uri,
-        displayName: String
-    ) {
-        work.cancelChildren()
-        analysis = null
-        saveNote = null
-        usedProfile = MedicalProfile()
-        ingredients = emptyList()
-        sourceName = displayName
-        step = IngredientStep.Working("Reading the label on this device…")
+    /** Reads a label photo: OCR on the device, then the ingredient list from its Ingredients section. */
+    fun readLabel(context: Context, uri: Uri, displayName: String) {
+        if (isReadingLabel) return
+        isReadingLabel = true
+        ocrMessage = "Analyzing label on-device..."
+        step = IngredientStep.Working("Analyzing label on-device...")
 
         work.launch {
-            val label = try {
-                IngredientWorkflow.readLabel(context, uri, displayName)
+            try {
+                val found = IngredientWorkflow.readLabel(context, uri, displayName)
+                if (found.isEmpty()) {
+                    // Do not guess by turning every line of the label into an "ingredient".
+                    ocrMessage = "Could not find an ingredients list in that photo. Keep the word " +
+                        "\"Ingredients\" in the frame, or type them below."
+                } else {
+                    ingredients = found
+                    ocrMessage = null
+                    analysis = null
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: OcrException) {
-                step = IngredientStep.Failed(e.error.userMessage)
-                return@launch
+                ocrMessage = "Error scanning image: ${e.error.userMessage}"
             } catch (e: Exception) {
-                step = IngredientStep.Failed("That label could not be read. Try another photo.")
-                return@launch
+                ocrMessage = "Could not read that photo. Try another one."
+            } finally {
+                isReadingLabel = false
+                step = if (ingredients.isEmpty()) IngredientStep.Idle else IngredientStep.Detected
             }
-
-            if (label.ingredients.isEmpty()) {
-                step = IngredientStep.Failed(
-                    "No ingredient list was found in that image. Frame the ingredients panel " +
-                        "so the whole list is visible."
-                )
-                return@launch
-            }
-
-            ingredients = label.ingredients
-            step = IngredientStep.Detected
         }
     }
 
     /**
-     * Adds ingredients typed or pasted by the user. The same deterministic parser is used
-     * as for OCR text, so manual and scanned lists behave identically.
+     * Adds what was typed; several ingredients can be separated by commas.
      *
      * @return how many new names were added.
      */
     fun addIngredient(raw: String): Int {
-        val parsed = IngredientParser.parse(raw)
-        if (parsed.isEmpty()) return 0
-
-        val existing = ingredients.map { it.lowercase() }.toMutableSet()
-        val added = parsed.filter { existing.add(it.lowercase()) }
-        if (added.isNotEmpty()) {
-            ingredients = ingredients + added
-            sourceName = sourceName.ifBlank { "Manual ingredient list" }
-            if (step is IngredientStep.Failed || step is IngredientStep.Ready) {
-                analysis = null
-                saveNote = null
-                step = IngredientStep.Detected
-            }
+        val parts = raw.split(',', '\n').map { it.trim() }.filter { it.isNotEmpty() }
+        val existing = ingredients.toMutableList()
+        parts.forEach { part -> if (existing.none { it.equals(part, ignoreCase = true) }) existing += part }
+        val added = existing.size - ingredients.size
+        if (added > 0) {
+            ingredients = existing
+            if (step == IngredientStep.Idle) step = IngredientStep.Detected
         }
-        return added.size
+        return added
     }
 
     fun removeIngredient(name: String) {
-        if (isBusy) return
-        ingredients = ingredients.filterNot { it.equals(name, ignoreCase = true) }
-        if (step is IngredientStep.Ready) {
-            analysis = null
-            saveNote = null
-        }
-        if (ingredients.isEmpty() && step is IngredientStep.Detected) {
-            step = IngredientStep.Idle
-        }
+        ingredients = ingredients.filterNot { it == name }
+        if (ingredients.isEmpty() && step == IngredientStep.Detected) step = IngredientStep.Idle
     }
 
-    /** Runs the chosen engine over the confirmed list. */
+    /** Runs the chosen engine over the list. The result sheet opens when [step] is Ready. */
     fun analyze() {
         if (isBusy || ingredients.isEmpty()) return
         val list = ingredients
-        analysis = null
+        isAnalyzing = true
+        analysisError = null
         saveNote = null
-        step = IngredientStep.Working("Loading your health profile…")
+        step = IngredientStep.Working("Analyzing...")
 
         work.launch {
-            usedProfile = when (val stored = FirestoreRepository.loadMedicalProfile()) {
-                is StoreResult.Success -> stored.value ?: MedicalProfile()
-                is StoreResult.Failure -> MedicalProfile()
-            }
-
-            step = IngredientStep.Working(
-                when (aiMode) {
-                    AiMode.AUTO -> "Analysing against your profile…"
-                    AiMode.FLASH -> "Analysing with Gemini cloud…"
-                    AiMode.NANO -> "Analysing on this device…"
-                }
-            )
-
             try {
-                val result = HybridAIService.analyzeIngredients(list, usedProfile, aiMode)
+                val profile = profileSource()
+                val result = HybridAIService.analyzeIngredients(list, profile, aiMode)
                 analysis = result
                 step = IngredientStep.Ready
                 persist(result, list)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: AiAnalysisException) {
-                step = IngredientStep.Failed(e.message)
+                analysisError = "Analysis failed: ${e.message}"
+                step = IngredientStep.Detected
                 if (e.kind == AiFailureKind.NANO_UNAVAILABLE) checkNano()
             } catch (e: Exception) {
-                step = IngredientStep.Failed("The analysis could not be completed.")
+                analysisError = "Analysis failed: the analysis could not be completed."
+                step = IngredientStep.Detected
+            } finally {
+                isAnalyzing = false
             }
         }
     }
 
     private fun persist(result: IngredientAnalysis, ingredients: List<String>) {
+        if (!FirestoreRepository.isSignedIn()) return
         work.launch {
             when (val saved = FirestoreRepository.saveIngredientScan(result, ingredients)) {
                 is StoreResult.Success -> {
                     saveNote = "Saved to your scan history."
                     onScanSaved?.invoke()
                 }
+                // Do not fail silently: the scan would be missing from History and the other apps.
                 is StoreResult.Failure ->
-                    saveNote = if (saved.notSignedIn) {
-                        "Not saved: sign in to keep this scan in your history."
-                    } else {
-                        saved.message
-                    }
+                    analysisError = "Analysis finished, but saving it to your account failed: ${saved.message}"
             }
         }
     }
 
-    /** Stops any in-flight analysis and drops its state. Safe to call when idle. */
+    /** Stops any in-flight work and drops its state. Safe to call when idle. */
     fun cancel() {
         reset()
     }
 
-    /**
-     * Clears the previous analysis result while preserving detected ingredients,
-     * leaving the flow in [IngredientStep.Detected] (or [IngredientStep.Idle] if empty)
-     * so the user can edit or re-analyze without losing their scanned list.
-     */
+    /** Closes the result sheet; the ingredient list stays for edits and re-analysis. */
     fun clearAnalysis() {
-        if (isBusy) return
         analysis = null
         saveNote = null
         step = if (ingredients.isNotEmpty()) IngredientStep.Detected else IngredientStep.Idle
@@ -280,11 +256,13 @@ class IngredientAnalysisState(
 
     fun reset() {
         work.cancelChildren()
+        isReadingLabel = false
+        isAnalyzing = false
         step = IngredientStep.Idle
-        sourceName = ""
         ingredients = emptyList()
         analysis = null
         saveNote = null
-        usedProfile = MedicalProfile()
+        ocrMessage = null
+        analysisError = null
     }
 }

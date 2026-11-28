@@ -20,4 +20,8 @@ object FallbackNotices {
      */
     const val INGREDIENT_CLOUD_FALLBACK =
         "On-device ingredient analysis was unavailable. Cloud Gemini was used for analysis."
+
+    /** Auto mode: the cloud failed and Gemini Nano answered instead (same text as iOS and web). */
+    const val INGREDIENT_ON_DEVICE_FALLBACK =
+        "Cloud Gemini was unavailable. Switched to Gemini Nano for on-device ingredient analysis."
 }

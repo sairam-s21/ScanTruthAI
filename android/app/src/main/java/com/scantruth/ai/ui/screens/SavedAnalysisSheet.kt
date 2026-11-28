@@ -11,7 +11,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -28,16 +31,21 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.scantruth.ai.model.FactorDirection
+import com.scantruth.ai.model.IngredientAnalysis
+import com.scantruth.ai.model.SavedHealthFactor
+import com.scantruth.ai.model.SavedIngredientNote
+import com.scantruth.ai.model.ScanKind
 import com.scantruth.ai.model.ScanRecord
+import com.scantruth.ai.model.VerdictLevel
 import com.scantruth.ai.ui.components.AppCard
 import com.scantruth.ai.ui.theme.Brand
 
-/** Score colour from the shared rubric. */
+/** Score colour from the shared rubric; same green / orange / red as iOS and the web. */
 internal fun scoreTone(score: Int?): Color = when {
-    score == null -> Brand.Primary
-    score >= 70 -> Brand.Primary
-    score >= 40 -> Brand.Warning
-    else -> Brand.Danger
+    (score ?: 0) >= 70 -> Color(0xFF33A666)
+    (score ?: 0) >= 40 -> Color(0xFFFF9500)
+    else -> Color(0xFFFF3B30)
 }
 
 /**
@@ -46,7 +54,7 @@ internal fun scoreTone(score: Int?): Color = when {
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SavedAnalysisSheet(record: ScanRecord, onDismiss: () -> Unit) {
+fun SavedAnalysisSheet(record: ScanRecord, onDismiss: () -> Unit, fallbackNotice: String? = null) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val tone = scoreTone(record.safetyScore)
 
@@ -118,6 +126,23 @@ fun SavedAnalysisSheet(record: ScanRecord, onDismiss: () -> Unit) {
                             modifier = Modifier.padding(top = 4.dp)
                         )
                     }
+                }
+            }
+
+            fallbackNotice?.let {
+                Row(verticalAlignment = Alignment.Top) {
+                    Icon(
+                        imageVector = Icons.Outlined.Info,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 1.dp).size(14.dp)
+                    )
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 6.dp)
+                    )
                 }
             }
 
@@ -251,3 +276,41 @@ private fun SheetSection(title: String, content: @Composable () -> Unit) {
         content()
     }
 }
+
+/** A fresh analysis in the same shape as a saved scan, so both open in the same sheet. */
+internal fun IngredientAnalysis.toRecord(ingredients: List<String>): ScanRecord = ScanRecord(
+    id = "current",
+    kind = ScanKind.INGREDIENT,
+    title = productName.ifBlank { "Scanned product" },
+    subtitle = productCategory,
+    safetyScore = safetyScore.coerceIn(0, 100),
+    badgeLabel = badgeLabel,
+    scannedAtMillis = System.currentTimeMillis(),
+    headline = headline.takeIf { it.isNotBlank() },
+    aiSummary = aiSummary.takeIf { it.isNotBlank() },
+    healthFactors = healthFactors.map { factor ->
+        SavedHealthFactor(
+            title = factor.label,
+            description = factor.detail.takeIf { it.isNotBlank() },
+            badge = when (factor.direction) {
+                FactorDirection.POSITIVE -> "Safe"
+                FactorDirection.CAUTION -> "Caution"
+                else -> "Note"
+            }
+        )
+    },
+    ingredientBreakdown = ingredientBreakdown.map { item ->
+        SavedIngredientNote(
+            name = item.name,
+            note = item.note?.takeIf { it.isNotBlank() },
+            status = when (item.verdict) {
+                VerdictLevel.CAUTION -> "Caution"
+                VerdictLevel.AVOID -> "Avoid"
+                else -> "Okay"
+            }
+        )
+    },
+    intakeGuidance = recommendedIntake.takeIf { it.isNotBlank() },
+    ingredientCount = ingredients.size,
+    modelUsed = modelUsedLabel
+)

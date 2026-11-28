@@ -37,9 +37,9 @@ class IngredientModePlannerTest {
     }
 
     @Test
-    fun `auto prefers nano and falls back to the cloud`() {
+    fun `auto uses the cloud first and falls back to nano`() {
         assertEquals(
-            listOf(InferenceAttempt.ON_DEVICE, InferenceAttempt.CLOUD),
+            listOf(InferenceAttempt.CLOUD, InferenceAttempt.ON_DEVICE),
             IngredientModePlanner.plan(AiMode.AUTO, nanoReady = true)
         )
         assertEquals(
@@ -49,10 +49,10 @@ class IngredientModePlannerTest {
     }
 
     @Test
-    fun `only auto counts a cloud run as a fallback`() {
-        assertTrue(IngredientModePlanner.cloudCountsAsFallback(AiMode.AUTO))
-        assertFalse(IngredientModePlanner.cloudCountsAsFallback(AiMode.FLASH))
-        assertFalse(IngredientModePlanner.cloudCountsAsFallback(AiMode.NANO))
+    fun `only auto counts an on-device run as a fallback`() {
+        assertTrue(IngredientModePlanner.onDeviceCountsAsFallback(AiMode.AUTO))
+        assertFalse(IngredientModePlanner.onDeviceCountsAsFallback(AiMode.FLASH))
+        assertFalse(IngredientModePlanner.onDeviceCountsAsFallback(AiMode.NANO))
     }
 
     @Test

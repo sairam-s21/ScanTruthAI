@@ -14,6 +14,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 
 /**
@@ -25,7 +26,8 @@ fun SectionHeader(
     title: String,
     modifier: Modifier = Modifier,
     actionLabel: String? = null,
-    onAction: (() -> Unit)? = null
+    onAction: (() -> Unit)? = null,
+    actionIcon: ImageVector = AppIcons.ChevronRight
 ) {
     Row(
         modifier = modifier.fillMaxWidth(),
@@ -53,7 +55,7 @@ fun SectionHeader(
                     color = MaterialTheme.colorScheme.primary
                 )
                 Icon(
-                    imageVector = AppIcons.ChevronRight,
+                    imageVector = actionIcon,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier

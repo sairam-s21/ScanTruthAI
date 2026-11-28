@@ -8,6 +8,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.scantruth.ai.AiAnalysisException
 import com.scantruth.ai.ExtractedText
+import com.scantruth.ai.PageText
 import com.scantruth.ai.FirestoreRepository
 import com.scantruth.ai.FirestoreRepository.StoreResult
 import com.scantruth.ai.HybridAIService
@@ -54,10 +55,6 @@ sealed interface ReportStep {
 class ReportAnalysisState(
     dispatcher: CoroutineDispatcher = Dispatchers.Main.immediate
 ) {
-
-    private companion object {
-        const val MAX_USER_REDACTIONS = 20
-    }
 
     var step by mutableStateOf<ReportStep>(ReportStep.Idle)
         private set
@@ -119,9 +116,19 @@ class ReportAnalysisState(
     var savedMessage by mutableStateOf<String?>(null)
         private set
 
-    /** How many values the reviewer has chosen to hide manually. */
-    var manualRedactions by mutableStateOf(0)
+    /** True when the text came from the typed health note instead of a document. */
+    var isTypedNote by mutableStateOf(false)
         private set
+
+    /**
+     * Called instead of saving when nobody is signed in: the approved extraction is merged
+     * into the session-only profile. The second argument is the report title, or null
+     * for a typed note.
+     */
+    var onGuestExtraction: ((MedicalExtraction, String?) -> Unit)? = null
+
+    /** The approved, masked note text; kept only until the note is saved. */
+    private var approvedNoteText: String? = null
 
     /**
      * Owned by the state holder, not by whichever screen started the work. The Scan
@@ -137,11 +144,11 @@ class ReportAnalysisState(
     /** Review alerts about incomplete extraction; they survive re-masking. */
     private var extractionAlerts: List<PrivacyAlert> = emptyList()
     private var nanoExtras: List<Pair<String, IdentifierCategory>> = emptyList()
-    private val userAdded = mutableListOf<Pair<String, IdentifierCategory>>()
     private var job: Job? = null
 
     val isBusy: Boolean
-        get() = step is ReportStep.Working || step == ReportStep.Extracting
+        get() = step is ReportStep.Working || step == ReportStep.Extracting ||
+            step == ReportStep.ExtractionReady
 
     val canReview: Boolean
         get() = step == ReportStep.Review && redactedText.isNotBlank()
@@ -179,60 +186,52 @@ class ReportAnalysisState(
                 return@launch
             }
 
-            document = extracted
-            pagesRead = extracted.pageCount
-            truncated = extracted.truncated
-            unreadablePages = extracted.unreadablePageCount
-            unreadablePageNumbers = extracted.skippedPageNumbers
-            coverageNote = extracted.coverageNote()
-            extractionAlerts = coverageAlerts(extracted)
-            step = ReportStep.Working("Masking personal identifiers on this device…")
-
-            val nanoScan = try {
-                ReportWorkflow.detectExtras(extracted, allowNanoAssist)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                NanoMaskScan.Unavailable(
-                    "Gemini Nano could not check this document on this device."
-                )
-            }
-            // The rule-based shield always runs; this records whether Nano contributed.
-            privacyShield = PrivacyShieldPolicy.assess(allowNanoAssist, nanoScan)
-            nanoExtras = PrivacyShieldPolicy.valuesOf(nanoScan)
-            val extrasUsed = nanoExtras.isNotEmpty()
-
-            applyOutcome(withContext(Dispatchers.Default) {
-                ReportWorkflow.mask(extracted, nanoExtras, userAdded)
-            }, nanoAssistUsed = allowNanoAssist && extrasUsed)
+            maskDocument(extracted, allowNanoAssist)
         }
     }
 
     /**
-     * Adds a value the reviewer spotted as unmasked and re-runs the deterministic masker
-     * over the original text on this device. Nothing is uploaded.
+     * Masks a typed health note on this device and opens the same review as a report.
+     * Nothing is sent until the user approves the masked text.
      */
-    fun addRedaction(value: String) {
-        if (step != ReportStep.Review) return
-        val cleaned = value.trim()
-        if (cleaned.length < 2 || cleaned.length > 200) return
-        if (userAdded.size >= MAX_USER_REDACTIONS) return
-        if (userAdded.any { it.first.equals(cleaned, ignoreCase = true) }) return
-        userAdded += cleaned to IdentifierCategory.OTHER
-        manualRedactions = userAdded.size
-
-        val currentDocument = document ?: return
-        val extras = nanoExtras
-        step = ReportStep.Working("Applying your correction on this device…")
-
+    fun startNote(text: String, allowNanoAssist: Boolean = true) {
+        val note = text.trim()
+        if (note.isEmpty()) return
+        reset()
+        isTypedNote = true
+        sourceName = "Typed health note"
+        step = ReportStep.Working("Masking private details on-device...")
         job = work.launch {
-            applyOutcome(
-                withContext(Dispatchers.Default) {
-                    ReportWorkflow.mask(currentDocument, extras, userAdded)
-                },
-                nanoAssistUsed = nanoAssistUsed
-            )
+            maskDocument(ExtractedText(pages = listOf(PageText(1, note)), truncated = false, pageMarkers = false), allowNanoAssist)
         }
+    }
+
+    private suspend fun maskDocument(extracted: ExtractedText, allowNanoAssist: Boolean) {
+        document = extracted
+        pagesRead = extracted.pageCount
+        truncated = extracted.truncated
+        unreadablePages = extracted.unreadablePageCount
+        unreadablePageNumbers = extracted.skippedPageNumbers
+        coverageNote = extracted.coverageNote()
+        extractionAlerts = coverageAlerts(extracted)
+        step = ReportStep.Working("Masking private details on-device...")
+
+        val nanoScan = try {
+            ReportWorkflow.detectExtras(extracted, allowNanoAssist)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            NanoMaskScan.Unavailable("Gemini Nano could not check this document on this device.")
+        }
+        // The rule-based shield always runs; this records whether Nano contributed.
+        privacyShield = PrivacyShieldPolicy.assess(allowNanoAssist, nanoScan)
+        nanoExtras = PrivacyShieldPolicy.valuesOf(nanoScan)
+        val extrasUsed = nanoExtras.isNotEmpty()
+
+        applyOutcome(
+            withContext(Dispatchers.Default) { ReportWorkflow.mask(extracted, nanoExtras) },
+            nanoAssistUsed = allowNanoAssist && extrasUsed
+        )
     }
 
     /**
@@ -245,51 +244,70 @@ class ReportAnalysisState(
         reset()
     }
 
-    /** Sends only the approved redacted text to the cloud extractor. */
+    /**
+     * Sends only the approved redacted text to the cloud extractor, then saves the result
+     * (signed in) or merges it into the session-only profile (signed out).
+     */
     fun approve() {
         if (!canApprove) return
         val approvedText = redactedText
+        if (isTypedNote) approvedNoteText = approvedText
         step = ReportStep.Extracting
 
         job = work.launch {
-            try {
-                extraction = HybridAIService.extractMedicalProfile(approvedText)
-                // The review copy is no longer needed once extraction is done.
-                clearReviewText()
-                step = ReportStep.ExtractionReady
+            val result = try {
+                HybridAIService.extractMedicalProfile(approvedText)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: AiAnalysisException) {
                 clearReviewText()
-                step = ReportStep.Failed(e.message)
+                step = ReportStep.Failed("Extraction failed: ${e.message}")
+                return@launch
             } catch (e: Exception) {
                 clearReviewText()
-                step = ReportStep.Failed("The medical extraction could not be completed.")
+                step = ReportStep.Failed("Extraction failed: the medical extraction could not be completed.")
+                return@launch
             }
+            // The review copy is no longer needed once extraction is done.
+            clearReviewText()
+            val titled = result.copy(reportTitle = result.reportTitle.ifBlank { sourceName })
+            extraction = titled
+            step = ReportStep.ExtractionReady
+
+            if (!FirestoreRepository.isSignedIn()) {
+                onGuestExtraction?.invoke(titled, if (isTypedNote) null else titled.reportTitle)
+                approvedNoteText = null
+                savedMessage = "Profile updated for this session only. Sign in to save it to your account."
+                step = ReportStep.Saved
+                return@launch
+            }
+            save()
         }
     }
 
     /** Saves the structured result and merges it into the stored profile. */
     fun save() {
         val result = extraction ?: return
-        step = ReportStep.Working("Saving to your health profile…")
+        step = ReportStep.Working("Saving to your health profile...")
+        val note = approvedNoteText
 
         job = work.launch {
             val merge = FirestoreRepository.mergeExtraction(result)
-            val report = FirestoreRepository.saveReport(
-                extraction = result,
-                identifiersMasked = replacements,
-                pagesScanned = pagesRead,
-                truncated = truncated
-            )
-
-            when {
-                merge is StoreResult.Failure -> step = ReportStep.Failed(merge.message)
-                report is StoreResult.Failure -> step = ReportStep.Failed(report.message)
-                else -> {
-                    // The analysis is finished: no report text stays in memory.
-                    clearReviewText()
-                    savedMessage = "Report saved and your health profile updated."
+            val record: StoreResult<*> = when {
+                merge is StoreResult.Failure -> merge
+                isTypedNote && note != null -> FirestoreRepository.saveHealthNote(note, result)
+                else -> FirestoreRepository.saveReport(
+                    extraction = result,
+                    identifiersMasked = replacements,
+                    pagesScanned = pagesRead,
+                    truncated = truncated
+                )
+            }
+            approvedNoteText = null
+            when (record) {
+                is StoreResult.Failure -> step = ReportStep.Failed("Saving failed: ${record.message}")
+                is StoreResult.Success<*> -> {
+                    savedMessage = "Profile updated and saved."
                     step = ReportStep.Saved
                     onReportSaved?.invoke()
                 }
@@ -300,9 +318,7 @@ class ReportAnalysisState(
     /** Drops the review text but keeps the extraction on screen. */
     fun clearReviewText() {
         document = null
-        userAdded.clear()
-        manualRedactions = 0
-                        redactedText = ""
+        redactedText = ""
         protectedOriginalText = ""
         identifiers = emptyList()
         alerts = emptyList()
@@ -338,6 +354,8 @@ class ReportAnalysisState(
         truncated = false
         extraction = null
         savedMessage = null
+        isTypedNote = false
+        approvedNoteText = null
     }
 
     private fun applyOutcome(outcome: MaskOutcome, nanoAssistUsed: Boolean) {

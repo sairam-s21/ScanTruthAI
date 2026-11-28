@@ -5,10 +5,6 @@ import com.scantruth.ai.model.AiEngine
 import com.scantruth.ai.model.FactorDirection
 import com.scantruth.ai.model.HealthFactor
 import com.scantruth.ai.model.HealthMarker
-import com.scantruth.ai.model.HealthActionItem
-import com.scantruth.ai.model.HealthActionPlan
-import com.scantruth.ai.model.HealthActionType
-import com.scantruth.ai.model.HealthContextSuggestion
 import com.scantruth.ai.model.HealthItemValidation
 import com.scantruth.ai.model.IngredientAnalysis
 import com.scantruth.ai.model.IngredientVerdict
@@ -80,27 +76,6 @@ internal data class BreakdownDto(
 )
 
 @Serializable
-internal data class HealthActionDto(
-    val item: String = "",
-    val value: String = "",
-    val category: String = "",
-    val action: String = "ADD",
-    val confidence: String? = null,
-    val clarificationNeeded: String? = null
-)
-
-@Serializable
-internal data class HealthContextDto(
-    val actions: List<HealthActionDto> = emptyList(),
-    val conditions: List<String> = emptyList(),
-    val allergies: List<String> = emptyList(),
-    val medications: List<String> = emptyList(),
-    val dietaryRestrictions: List<String> = emptyList(),
-    val healthNotes: List<String> = emptyList(),
-    val clarificationNeeded: String? = null
-)
-
-@Serializable
 internal data class NanoIdentifierDto(
     val value: String = "",
     val category: String? = null
@@ -109,6 +84,12 @@ internal data class NanoIdentifierDto(
 @Serializable
 internal data class NanoIdentifierResponseDto(
     val items: List<NanoIdentifierDto> = emptyList()
+)
+
+@Serializable
+internal data class IngredientExtractionDto(
+    val ingredientsSectionFound: Boolean? = null,
+    val ingredients: List<String>? = null
 )
 
 @Serializable
@@ -266,160 +247,6 @@ object AiResponseParser {
         return ParseResult.Success(analysis)
     }
 
-    fun parseHealthActions(
-        raw: String,
-        sourceInput: String? = null
-    ): ParseResult<HealthActionPlan> {
-        val body = extractJsonObject(raw)
-            ?: return ParseResult.Invalid("The AI response was empty.")
-        val dto = try {
-            json.decodeFromString(HealthContextDto.serializer(), body)
-        } catch (e: Exception) {
-            return ParseResult.Invalid("The AI response could not be read as health action data.")
-        }
-
-        val clarification = dto.clarificationNeeded.clean()
-        val actions = mutableListOf<HealthActionItem>()
-
-        dto.actions.forEach { actionDto ->
-            val item = actionDto.item.clean() ?: actionDto.value.clean()
-            val category = actionDto.category.clean()?.lowercase()?.replace(" ", "")?.replace("_", "") ?: ""
-            val actionStr = actionDto.action.clean()?.uppercase() ?: "ADD"
-            val itemClarification = actionDto.clarificationNeeded.clean()
-            val confidence = actionDto.confidence.clean() ?: "high"
-
-            val actionType = when (actionStr) {
-                "REMOVE" -> HealthActionType.REMOVE
-                "CLARIFY" -> HealthActionType.CLARIFY
-                else -> HealthActionType.ADD
-            }
-
-            if (item != null && category.isNotEmpty()) {
-                val normalizedCat = when {
-                    category.contains("disease") || category.contains("condition") -> "diseases"
-                    category.contains("allerg") -> "allergies"
-                    category.contains("med") -> "medications"
-                    category.contains("diet") -> "dietaryRestrictions"
-                    else -> "diseases"
-                }
-                actions.add(
-                    HealthActionItem(
-                        item = item,
-                        category = normalizedCat,
-                        action = actionType,
-                        confidence = confidence,
-                        clarificationNeeded = itemClarification
-                    )
-                )
-            } else if (itemClarification != null) {
-                actions.add(
-                    HealthActionItem(
-                        item = item.orEmpty(),
-                        category = "diseases",
-                        action = HealthActionType.CLARIFY,
-                        confidence = "low",
-                        clarificationNeeded = itemClarification
-                    )
-                )
-            }
-        }
-
-        if (actions.isEmpty()) {
-            dto.conditions.cleanList().forEach {
-                actions.add(HealthActionItem(it, "diseases", HealthActionType.ADD))
-            }
-            dto.allergies.cleanList().forEach {
-                actions.add(HealthActionItem(it, "allergies", HealthActionType.ADD))
-            }
-            dto.medications.cleanList().forEach {
-                actions.add(HealthActionItem(it, "medications", HealthActionType.ADD))
-            }
-            dto.dietaryRestrictions.cleanList().forEach {
-                actions.add(HealthActionItem(it, "dietaryRestrictions", HealthActionType.ADD))
-            }
-        }
-
-        val distinctActions = actions.distinctBy {
-            "${it.item.lowercase()}|${it.category.lowercase()}|${it.action}"
-        }
-
-        val effectiveClarification = clarification
-            ?: actions.firstOrNull { it.clarificationNeeded != null }?.clarificationNeeded
-
-        val plan = HealthActionPlan(
-            actions = distinctActions,
-            clarificationNeeded = effectiveClarification
-        )
-
-        return if (plan.isEmpty) {
-            ParseResult.Invalid(
-                "No health details or actions could be identified from your statement."
-            )
-        } else {
-            ParseResult.Success(plan)
-        }
-    }
-
-    fun parseHealthContext(
-        raw: String,
-        sourceInput: String? = null
-    ): ParseResult<HealthContextSuggestion> {
-        val body = extractJsonObject(raw)
-            ?: return ParseResult.Invalid("The AI response was empty.")
-        val dto = try {
-            json.decodeFromString(HealthContextDto.serializer(), body)
-        } catch (e: Exception) {
-            return ParseResult.Invalid("The AI response could not be read as health context data.")
-        }
-
-        var conditions = dto.conditions.cleanList()
-        var allergies = dto.allergies.cleanList()
-        var medications = dto.medications.cleanList()
-        var dietaryRestrictions = dto.dietaryRestrictions.cleanList()
-        var healthNotes = dto.healthNotes.cleanList()
-        val clarification = dto.clarificationNeeded.clean()
-
-        if (conditions.isEmpty() && allergies.isEmpty() && medications.isEmpty() && dietaryRestrictions.isEmpty()) {
-            dto.actions.filter { it.action.uppercase() == "ADD" }.forEach { a ->
-                val itm = a.item.clean() ?: return@forEach
-                val cat = a.category.lowercase()
-                when {
-                    cat.contains("disease") || cat.contains("condition") -> conditions = (conditions + itm).distinctBy { it.lowercase() }
-                    cat.contains("allerg") -> allergies = (allergies + itm).distinctBy { it.lowercase() }
-                    cat.contains("med") -> medications = (medications + itm).distinctBy { it.lowercase() }
-                    cat.contains("diet") -> dietaryRestrictions = (dietaryRestrictions + itm).distinctBy { it.lowercase() }
-                }
-            }
-        }
-
-        // Unclassified information should remain in Health notes
-        if (conditions.isEmpty() && allergies.isEmpty() && medications.isEmpty() &&
-            dietaryRestrictions.isEmpty() && healthNotes.isEmpty() && clarification == null
-        ) {
-            val fallbackNote = sourceInput?.trim()?.takeIf { it.isNotEmpty() }
-            if (fallbackNote != null) {
-                healthNotes = listOf(fallbackNote)
-            }
-        }
-
-        val suggestion = HealthContextSuggestion(
-            conditions = conditions,
-            allergies = allergies,
-            medications = medications,
-            dietaryRestrictions = dietaryRestrictions,
-            healthNotes = healthNotes,
-            clarificationNeeded = clarification
-        )
-
-        return if (suggestion.isEmpty && suggestion.clarificationNeeded == null) {
-            ParseResult.Invalid(
-                "No health details or categories could be identified from your statement."
-            )
-        } else {
-            ParseResult.Success(suggestion)
-        }
-    }
-
     internal fun parseNanoIdentifiers(raw: String): List<NanoIdentifierDto> {
         val body = extractJsonObject(raw) ?: return emptyList()
         return try {
@@ -429,6 +256,20 @@ object AiResponseParser {
                 .take(50)
         } catch (e: Exception) {
             emptyList()
+        }
+    }
+
+    /** (sectionFound, ingredients), or null when the answer is not usable. */
+    fun parseIngredientExtraction(raw: String): Pair<Boolean, List<String>>? {
+        val body = extractJsonObject(raw) ?: return null
+        return try {
+            val dto = json.decodeFromString(IngredientExtractionDto.serializer(), body)
+            val items = dto.ingredients ?: return null
+            (dto.ingredientsSectionFound != false) to items
+                .map { it.replace(Regex("\\s+"), " ").trim() }
+                .filter { it.length in 2..80 && it.count(Char::isLetter) >= 2 }
+        } catch (e: Exception) {
+            null
         }
     }
 

@@ -8,9 +8,7 @@ import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.SetOptions
 import com.google.firebase.firestore.firestore
-import com.scantruth.ai.model.HealthActionItem
 import com.scantruth.ai.model.IngredientAnalysis
-import com.scantruth.ai.model.HealthContextSuggestion
 import com.scantruth.ai.model.MedicalExtraction
 import com.scantruth.ai.model.MedicalProfile
 import com.scantruth.ai.model.AiEngine
@@ -54,6 +52,7 @@ object FirestoreRepository {
     private const val PROFILE_DOCUMENT = "current"
     private const val REPORTS_SUBCOLLECTION = "medicalReports"
     private const val SCANS_SUBCOLLECTION = "scanHistory"
+    private const val HEALTH_NOTES_SUBCOLLECTION = "healthNotes"
     private const val SCAN_CAPTURE_DIR = "scan-captures"
     private const val PRIVACY_PREFS = "scantruth_privacy"
     private const val KEY_CLEAR_PENDING = "firestore_cache_clear_pending"
@@ -117,38 +116,22 @@ object FirestoreRepository {
     }
 
     /**
-     * Atomically applies validated ADD and REMOVE actions to the user's stored MedicalProfile
-     * and saves directly to Cloud Firestore.
+     * Saves a typed health note (already masked on this device and approved by the user)
+     * to healthNotes, the same collection the web and iOS apps write.
      */
-    suspend fun applyHealthActions(actions: List<HealthActionItem>): StoreResult<Pair<MedicalProfile, List<String>>> {
+    suspend fun saveHealthNote(userNote: String, extraction: MedicalExtraction): StoreResult<String> {
         val uid = userIdOrNull() ?: return signedOut()
         return firestoreCall {
-            val document = profileDocument(uid)
-            val existing = document.get().await()
-                .takeIf { it.exists() }
-                ?.toMedicalProfile()
-                ?: MedicalProfile()
-            val (updated, changes) = existing.applyingActions(actions)
-            document.set(updated.toFields(), SetOptions.merge()).await()
-            updated to changes
-        }
-    }
-
-    /**
-     * Merges user-approved AI health context suggestions into the stored profile,
-     * de-duplicating entries and saving directly to Cloud Firestore.
-     */
-    suspend fun mergeHealthContext(suggestion: HealthContextSuggestion): StoreResult<MedicalProfile> {
-        val uid = userIdOrNull() ?: return signedOut()
-        return firestoreCall {
-            val document = profileDocument(uid)
-            val existing = document.get().await()
-                .takeIf { it.exists() }
-                ?.toMedicalProfile()
-                ?: MedicalProfile()
-            val merged = existing.mergedWith(suggestion)
-            document.set(merged.toFields(), SetOptions.merge()).await()
-            merged
+            val summary = extraction.conditions.joinToString(", ").ifBlank { extraction.reportTitle }
+            val ref = db.collection(USERS).document(uid).collection(HEALTH_NOTES_SUBCOLLECTION).document()
+            ref.set(
+                mapOf(
+                    "userNote" to userNote.take(5000),
+                    "extractedSummary" to summary.take(1000),
+                    "createdAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            ref.id
         }
     }
 
@@ -289,14 +272,7 @@ object FirestoreRepository {
                 put("recommendedIntake", mapOf("guidance" to it))
             }
             put("rawIngredients", ingredients.take(500))
-            put(
-                "modelUsed",
-                when {
-                    analysis.engine == AiEngine.ON_DEVICE -> "Gemini Nano (On-Device)"
-                    analysis.usedFallback -> "Gemini 3.5 Flash Lite (Cloud Fallback)"
-                    else -> "Gemini 3.5 Flash Lite"
-                }
-            )
+            put("modelUsed", analysis.modelUsedLabel)
         }
     }
 
@@ -313,6 +289,14 @@ object FirestoreRepository {
                 .map { document -> document.toScanRecord() }
                 // Older builds also logged reports here; reports are listed in My Health.
                 .filter { it.kind != ScanKind.MEDICAL_REPORT }
+        }
+    }
+
+    suspend fun deleteScan(scanId: String): StoreResult<Unit> {
+        val uid = userIdOrNull() ?: return signedOut()
+        return firestoreCall {
+            db.collection(USERS).document(uid).collection(SCANS_SUBCOLLECTION).document(scanId).delete().await()
+            Unit
         }
     }
 

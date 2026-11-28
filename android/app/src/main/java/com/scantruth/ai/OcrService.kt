@@ -31,7 +31,9 @@ data class PageText(val pageNumber: Int, val text: String)
 data class ExtractedText(
     val pages: List<PageText>,
     val truncated: Boolean,
-    val skippedPageNumbers: List<Int> = emptyList()
+    val skippedPageNumbers: List<Int> = emptyList(),
+    /** False for typed text, which has no pages; then no "Page N" markers are added. */
+    val pageMarkers: Boolean = true
 ) {
     val characterCount: Int get() = pages.sumOf { it.text.length }
 
@@ -57,7 +59,9 @@ data class ExtractedText(
 
     /** Text as handed to the privacy layer, with page markers kept. */
     val plainText: String
-        get() = pages.joinToString("\n\n") { "Page ${it.pageNumber}\n${it.text}" }
+        get() = pages.joinToString("\n\n") {
+            if (pageMarkers) "Page ${it.pageNumber}\n${it.text}" else it.text
+        }
 }
 
 /**
