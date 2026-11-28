@@ -12,7 +12,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -36,28 +38,39 @@ import com.scantruth.ai.ui.theme.Brand
  * statistic tiles and the decorative scanner illustration.
  */
 
-/** Square icon tile with a soft green (or deep green) background. */
+/** Square icon tile with a soft green (or deep green or purple) background. */
 @Composable
 fun IconTile(
     icon: ImageVector,
     modifier: Modifier = Modifier,
     size: Int = 42,
     deep: Boolean = false,
+    purple: Boolean = false,
     tint: Color? = null
 ) {
+    val bg = when {
+        deep -> Brand.Deep
+        purple -> Brand.PurpleBg
+        else -> Brand.Soft
+    }
+    val defaultTint = when {
+        deep -> Color.White
+        purple -> Brand.Purple
+        else -> Brand.Primary
+    }
     Box(
         modifier = modifier
             .size(size.dp)
             .background(
-                color = if (deep) Brand.Deep else Brand.Soft,
-                shape = RoundedCornerShape((size / 3.2f).dp)
+                color = bg,
+                shape = RoundedCornerShape(12.dp)
             ),
         contentAlignment = Alignment.Center
     ) {
         Icon(
             imageVector = icon,
             contentDescription = null,
-            tint = tint ?: if (deep) Color.White else Brand.Primary,
+            tint = tint ?: defaultTint,
             modifier = Modifier.size((size * 0.48f).dp)
         )
     }
@@ -71,19 +84,35 @@ fun SoftBanner(
     body: String,
     modifier: Modifier = Modifier
 ) {
+    PrivacyNoteCard(
+        icon = icon,
+        title = title,
+        body = body,
+        modifier = modifier
+    )
+}
+
+/** Privacy note card matching web .privacy-note-card */
+@Composable
+fun PrivacyNoteCard(
+    title: String,
+    body: String,
+    modifier: Modifier = Modifier,
+    icon: ImageVector = AppIcons.ShieldCheck
+) {
     Surface(
         modifier = modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.primaryContainer
+        shape = RoundedCornerShape(18.dp),
+        color = Brand.Soft.copy(alpha = 0.8f)
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp),
+            modifier = Modifier.padding(16.dp),
             verticalAlignment = Alignment.Top
         ) {
             Icon(
                 imageVector = icon,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                tint = Brand.Primary,
                 modifier = Modifier
                     .padding(top = 1.dp)
                     .size(18.dp)
@@ -92,12 +121,12 @@ fun SoftBanner(
                 Text(
                     text = title,
                     style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                    color = Brand.TextPrimary
                 )
                 Text(
                     text = body,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    color = Brand.TextSecondary,
                     modifier = Modifier.padding(top = 3.dp)
                 )
             }
@@ -140,7 +169,7 @@ fun StatTile(
     }
 }
 
-/** White card used across the dashboard, with the shared radius and hairline border. */
+/** White card matching web .card with 20px radius and subtle hairline border. */
 @Composable
 fun AppCard(
     modifier: Modifier = Modifier,
@@ -148,16 +177,16 @@ fun AppCard(
 ) {
     Surface(
         modifier = modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        shape = RoundedCornerShape(20.dp),
+        color = Brand.Card,
+        border = BorderStroke(1.dp, Color(0x0F000000)),
         shadowElevation = 1.dp
     ) {
         Column(content = content)
     }
 }
 
-/** Dashed-style empty state used until real content exists. */
+/** Dashed-style empty state matching web .dashed-card. */
 @Composable
 fun EmptyStateCard(
     icon: ImageVector,
@@ -169,40 +198,42 @@ fun EmptyStateCard(
 ) {
     Surface(
         modifier = modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        shape = RoundedCornerShape(18.dp),
+        color = Brand.Card,
+        border = BorderStroke(1.2.dp, Brand.MintBorder)
     ) {
         Column(
-            modifier = Modifier.padding(horizontal = 18.dp, vertical = 22.dp),
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 26.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             IconTile(icon = icon, size = 44)
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.padding(top = 12.dp)
-            )
+            if (title.isNotBlank()) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Brand.TextPrimary,
+                    modifier = Modifier.padding(top = 10.dp)
+                )
+            }
             Text(
                 text = body,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 5.dp)
+                color = Brand.TextSecondary,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(top = 4.dp)
             )
             if (actionLabel != null && onAction != null) {
-                Button(
+                TextButton(
                     onClick = onAction,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 14.dp),
-                    shape = RoundedCornerShape(14.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary,
-                        contentColor = MaterialTheme.colorScheme.onPrimary
-                    )
+                    modifier = Modifier.padding(top = 8.dp)
                 ) {
-                    Text(actionLabel, style = MaterialTheme.typography.labelLarge)
+                    Text(
+                        text = actionLabel,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = Brand.Primary
+                    )
                 }
             }
         }

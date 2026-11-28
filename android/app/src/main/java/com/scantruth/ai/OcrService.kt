@@ -6,13 +6,19 @@ import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.webkit.MimeTypeMap
 import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.Text
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import com.scantruth.ai.domain.ExtractionConfidence
+import com.scantruth.ai.domain.IngredientParser
+import com.scantruth.ai.domain.OcrElementBox
+import com.scantruth.ai.domain.OcrLayoutReconstructor
+import com.scantruth.ai.domain.OcrLineBox
+import com.scantruth.ai.domain.ReconstructedOcrLayout
 import java.io.FileNotFoundException
 import java.io.IOException
-import kotlin.math.max
+import kotlin.math.abs
 import kotlin.math.min
-import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.tasks.await
@@ -87,6 +93,17 @@ sealed class ExtractionError(val userMessage: String) {
         "That image could not be opened on this device."
     )
 }
+
+/** Label OCR result with block/column-reconstructed text, confidence, and image quality diagnostics. */
+data class LabelOcrResult(
+    val text: String,
+    val primaryTextForParsing: String = text,
+    val lineCount: Int,
+    val blockCount: Int,
+    val meanConfidence: Float? = null,
+    val qualityHint: String? = null,
+    val durationMs: Long = 0L
+)
 
 class OcrException(val error: ExtractionError) : Exception(error.userMessage)
 
@@ -234,6 +251,238 @@ object OcrService {
         bitmap.eraseColor(android.graphics.Color.WHITE)
         page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
         return bitmap
+    }
+
+    /**
+     * Multi-pass on-device label OCR:
+     *  1. Evaluates resolution, brightness, contrast, blur and glare non-destructively.
+     *  2. Runs Pass 1 on the EXIF-oriented full image with element/column geometry reconstruction.
+     *  3. Applies deskew / tile-adaptive contrast enhancement when skewed, dark or glare-affected.
+     *  4. Runs Pass 2 on a high-resolution crop around the candidate ingredient region so dense
+     *     small packaging fonts are recognized cleanly.
+     *
+     * Recognized text from passes is preserved without silent dropping.
+     */
+    suspend fun extractLabel(context: Context, uri: Uri): LabelOcrResult {
+        return try {
+            withContext(Dispatchers.IO) {
+                val startNs = System.nanoTime()
+                val quality = ImagePreprocessor.assessQuality(context, uri)
+                val qualityHint = quality?.qualityHint
+
+                val baseBitmap = ImagePreprocessor.loadOrientedBitmap(context, uri)
+                if (baseBitmap == null) {
+                    val image = try {
+                        InputImage.fromFilePath(context, uri)
+                    } catch (e: IOException) {
+                        throw OcrException(ExtractionError.ImageDecodeFailed)
+                    } catch (e: SecurityException) {
+                        throw OcrException(ExtractionError.Unreadable)
+                    }
+                    val visionText = recognizer.process(image).await()
+                    val layout = reconstructLayout(visionText)
+                    val text = layout.fullText.ifBlank { visionText.text.trim() }
+                    if (text.isBlank()) throw OcrException(ExtractionError.NoTextFound)
+                    val elapsedMs = ((System.nanoTime() - startNs) / 1_000_000L).coerceAtLeast(1L)
+                    return@withContext LabelOcrResult(
+                        text = text,
+                        primaryTextForParsing = text,
+                        lineCount = visionText.textBlocks.sumOf { it.lines.size },
+                        blockCount = visionText.textBlocks.size,
+                        meanConfidence = layout.meanLineConfidence,
+                        qualityHint = qualityHint,
+                        durationMs = elapsedMs
+                    )
+                }
+
+                var deskewedBitmap: Bitmap? = null
+                var enhancedFullBitmap: Bitmap? = null
+                var cropBitmap: Bitmap? = null
+                var enhancedCropBitmap: Bitmap? = null
+
+                try {
+                    val pass1Vision = recognizer.process(InputImage.fromBitmap(baseBitmap, 0)).await()
+                    val pass1Layout = reconstructLayout(pass1Vision)
+
+                    var activeBitmap = baseBitmap
+                    var activeVision = pass1Vision
+                    var activeLayout = pass1Layout
+
+                    // Pass 1B: Deskew tilted labels and/or run glare-tolerant enhancement if needed
+                    val skew = pass1Layout.estimatedSkewDegrees
+                    if (abs(skew) in 2.5f..45f) {
+                        deskewedBitmap = ImagePreprocessor.rotateBitmap(baseBitmap, -skew)
+                        if (deskewedBitmap !== baseBitmap) {
+                            activeBitmap = deskewedBitmap
+                            activeVision = recognizer.process(InputImage.fromBitmap(activeBitmap, 0)).await()
+                            val deskewedLayout = reconstructLayout(activeVision)
+                            if (scoreCandidateOcr(deskewedLayout.fullText) >= scoreCandidateOcr(activeLayout.fullText)) {
+                                activeLayout = deskewedLayout
+                            } else {
+                                // Keep deskewed bitmap only if it actually helped
+                                activeBitmap = baseBitmap
+                                activeVision = pass1Vision
+                            }
+                        }
+                    }
+
+                    val initialParse = IngredientParser.parseDetailed(
+                        ocrText = activeLayout.fullText,
+                        qualityHint = qualityHint,
+                        meanOcrConfidence = activeLayout.meanLineConfidence
+                    )
+                    if (quality?.needsEnhancement == true ||
+                        activeLayout.fullText.isBlank() ||
+                        initialParse.confidence != ExtractionConfidence.HIGH
+                    ) {
+                        enhancedFullBitmap = ImagePreprocessor.enhanceForPackagingOcr(activeBitmap)
+                        val enhancedVision = recognizer.process(InputImage.fromBitmap(enhancedFullBitmap, 0)).await()
+                        val enhancedLayout = reconstructLayout(enhancedVision)
+                        if (scoreCandidateOcr(enhancedLayout.fullText) > scoreCandidateOcr(activeLayout.fullText)) {
+                            activeLayout = enhancedLayout
+                            activeVision = enhancedVision
+                        }
+                    }
+
+                    // Pass 2: High-res crop of the candidate ingredient region from oriented activeBitmap
+                    var bestTextForParsing = activeLayout.fullText
+                    var bestMeanConf = activeLayout.meanLineConfidence
+                    var cropExtraText: String? = null
+
+                    val regionBox = activeLayout.ingredientRegionBox
+                    if (regionBox != null) {
+                        cropBitmap = ImagePreprocessor.cropIngredientRegion(activeBitmap, regionBox)
+                        val targetCrop = cropBitmap
+                        if (targetCrop != null) {
+                            val rawCropVision = recognizer.process(InputImage.fromBitmap(targetCrop, 0)).await()
+                            val rawCropLayout = reconstructLayout(rawCropVision)
+
+                            enhancedCropBitmap = ImagePreprocessor.enhanceForPackagingOcr(targetCrop)
+                            val enhCropVision = recognizer.process(InputImage.fromBitmap(enhancedCropBitmap, 0)).await()
+                            val enhCropLayout = reconstructLayout(enhCropVision)
+
+                            val winningCropLayout =
+                                if (scoreCandidateOcr(enhCropLayout.fullText) >= scoreCandidateOcr(rawCropLayout.fullText)) {
+                                    enhCropLayout
+                                } else {
+                                    rawCropLayout
+                                }
+
+                            if (winningCropLayout.fullText.isNotBlank()) {
+                                cropExtraText = winningCropLayout.fullText
+                                val fullScore = scoreCandidateOcr(bestTextForParsing)
+                                val cropScore = scoreCandidateOcr(winningCropLayout.fullText)
+                                if (cropScore >= fullScore) {
+                                    bestTextForParsing = mergeCropAndFullAllergens(
+                                        cropText = winningCropLayout.fullText,
+                                        fullText = activeLayout.fullText
+                                    )
+                                    bestMeanConf = winningCropLayout.meanLineConfidence ?: bestMeanConf
+                                }
+                            }
+                        }
+                    }
+
+                    val preservedRaw = buildString {
+                        append(activeLayout.fullText.trim())
+                        if (!cropExtraText.isNullOrBlank() && cropExtraText.trim() != activeLayout.fullText.trim()) {
+                            if (isNotEmpty()) append("\n\n--- High-res ingredient crop ---\n")
+                            append(cropExtraText.trim())
+                        }
+                    }.trim()
+
+                    if (preservedRaw.isBlank()) throw OcrException(ExtractionError.NoTextFound)
+                    val elapsedMs = ((System.nanoTime() - startNs) / 1_000_000L).coerceAtLeast(1L)
+                    LabelOcrResult(
+                        text = preservedRaw,
+                        primaryTextForParsing = bestTextForParsing.ifBlank { preservedRaw },
+                        lineCount = activeVision.textBlocks.sumOf { it.lines.size },
+                        blockCount = activeVision.textBlocks.size,
+                        meanConfidence = bestMeanConf,
+                        qualityHint = qualityHint,
+                        durationMs = elapsedMs
+                    )
+                } finally {
+                    enhancedCropBitmap?.recycle()
+                    cropBitmap?.recycle()
+                    enhancedFullBitmap?.recycle()
+                    if (deskewedBitmap != null && deskewedBitmap !== baseBitmap) {
+                        deskewedBitmap.recycle()
+                    }
+                    baseBitmap.recycle()
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: OcrException) {
+            throw e
+        } catch (e: Exception) {
+            throw OcrException(ExtractionError.Unreadable)
+        }
+    }
+
+    private fun reconstructLayout(visionText: Text): ReconstructedOcrLayout {
+        val lineBoxes = visionText.textBlocks.flatMap { block ->
+            block.lines.mapNotNull { line ->
+                val box = line.boundingBox ?: block.boundingBox ?: return@mapNotNull null
+                val elements = line.elements.mapNotNull { el ->
+                    val elBox = el.boundingBox ?: return@mapNotNull null
+                    OcrElementBox(
+                        text = el.text,
+                        left = elBox.left,
+                        top = elBox.top,
+                        right = elBox.right,
+                        bottom = elBox.bottom
+                    )
+                }
+                OcrLineBox(
+                    text = line.text,
+                    left = box.left,
+                    top = box.top,
+                    right = box.right,
+                    bottom = box.bottom,
+                    angle = line.angle,
+                    confidence = line.confidence,
+                    elements = elements
+                )
+            }
+        }
+        return if (lineBoxes.isNotEmpty()) {
+            OcrLayoutReconstructor.reconstruct(lineBoxes)
+        } else {
+            val fallback = visionText.text.trim()
+            ReconstructedOcrLayout(
+                fullText = fallback,
+                columnCount = if (fallback.isBlank()) 0 else 1,
+                estimatedSkewDegrees = 0f,
+                meanLineConfidence = null,
+                ingredientRegionBox = null
+            )
+        }
+    }
+
+    private fun scoreCandidateOcr(text: String): Int {
+        if (text.isBlank()) return -100
+        val parsed = IngredientParser.parseDetailed(text)
+        var score = 0
+        if (parsed.hasExplicitHeader) score += 50
+        score += parsed.ingredients.size * 8
+        score += parsed.allergenDeclarations.size * 6
+        score -= parsed.warnings.size * 8
+        score -= parsed.ingredients.count { IngredientParser.looksLikeOcrGarble(it) } * 12
+        return score
+    }
+
+    private fun mergeCropAndFullAllergens(cropText: String, fullText: String): String {
+        val cropAllergens = IngredientParser.parseDetailed(cropText).allergenDeclarations
+        if (cropAllergens.isNotEmpty()) return cropText
+        val fullAllergens = IngredientParser.parseDetailed(fullText).allergenDeclarations
+        if (fullAllergens.isEmpty()) return cropText
+        return buildString {
+            append(cropText.trim())
+            append("\n\nAllergen Advice: ")
+            append(fullAllergens.joinToString(". "))
+        }
     }
 
     private suspend fun recogniseUri(context: Context, uri: Uri): String {

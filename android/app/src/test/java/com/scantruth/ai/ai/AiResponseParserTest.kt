@@ -125,6 +125,32 @@ class AiResponseParserTest {
     }
 
     @Test
+    fun `parses unknown verdicts and profile conflicts cleanly`() {
+        val json = """
+            {
+              "productName": "Bourbon Biscuits",
+              "productCategory": "food",
+              "safetyScore": 32,
+              "headline": "Contains wheat and dairy.",
+              "ingredientBreakdown": [
+                {"name": "Milk Solids", "verdict": "avoid", "note": "Contains lactose and dairy", "conflict": "Lactose intolerance"},
+                {"name": "Emulsifier 322", "verdict": "unknown", "note": "Source not specified", "conflict": "none"},
+                {"name": "Cocoa Solids", "verdict": "safe", "note": "No identified conflict"}
+              ]
+            }
+        """.trimIndent()
+        val analysis = AiResponseParser
+            .parseIngredientAnalysis(json, AiEngine.CLOUD)
+            .requireSuccess()
+
+        assertEquals(VerdictLevel.AVOID, analysis.ingredientBreakdown[0].verdict)
+        assertEquals("Lactose intolerance", analysis.ingredientBreakdown[0].conflict)
+        assertEquals(VerdictLevel.UNKNOWN, analysis.ingredientBreakdown[1].verdict)
+        assertNull(analysis.ingredientBreakdown[1].conflict)
+        assertEquals(VerdictLevel.SAFE, analysis.ingredientBreakdown[2].verdict)
+    }
+
+    @Test
     fun `rejects a safety score outside the allowed range`() {
         val tooHigh = validIngredientJson.replace("\"safetyScore\": 74", "\"safetyScore\": 150")
         assertTrue(

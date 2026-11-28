@@ -1,5 +1,6 @@
 package com.scantruth.ai.ui.state
 
+import android.util.Log
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -17,15 +18,21 @@ import com.scantruth.ai.model.ReportRecord
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-/** The four lists of the stored health profile, in the order My Health shows them. */
-enum class ProfileCategory(val title: String, val singular: String) {
-    CONDITIONS("Diseases", "disease"),
-    ALLERGIES("Allergies", "allergy"),
-    MEDICATIONS("Medications", "medication"),
-    DIETARY_RESTRICTIONS("Dietary Restrictions", "dietary restriction"),
-    HEALTH_NOTES("Health Notes", "health note");
+/** The four lists of the stored health profile, matching web health categories. */
+enum class ProfileCategory(
+    val title: String,
+    val singular: String,
+    val addTitle: String,
+    val placeholder: String
+) {
+    CONDITIONS("Known Conditions", "medical condition", "Add a condition", "e.g. Hypertension"),
+    ALLERGIES("Allergies", "allergy", "Add allergy", "e.g. Peanuts"),
+    MEDICATIONS("Medications", "medication", "Add medication", "e.g. Metformin 500 mg"),
+    DIETARY_RESTRICTIONS("Dietary restrictions", "dietary restriction", "Add dietary restriction", "e.g. Low sodium"),
+    HEALTH_NOTES("Health notes", "health note", "Add note", "Add a note");
 
     companion object {
         val ACTIVE_CATEGORIES = listOf(CONDITIONS, ALLERGIES, MEDICATIONS, DIETARY_RESTRICTIONS)
@@ -84,6 +91,35 @@ class MyHealthUiState {
     var aiAssistantSuccessMessage by mutableStateOf<String?>(null)
         private set
 
+    private var autoDismissJob: Job? = null
+
+    fun showSuccessMessage(scope: CoroutineScope, message: String, durationMs: Long = 4500L) {
+        autoDismissJob?.cancel()
+        aiAssistantSuccessMessage = message
+        autoDismissJob = scope.launch {
+            delay(durationMs)
+            aiAssistantSuccessMessage = null
+        }
+    }
+
+    fun clearSuccessMessage() {
+        autoDismissJob?.cancel()
+        autoDismissJob = null
+        aiAssistantSuccessMessage = null
+    }
+
+    internal fun setAiAssistantSuccessMessageForTesting(
+        scope: CoroutineScope,
+        message: String?,
+        autoDismissMs: Long = 4500L
+    ) {
+        if (message != null) {
+            showSuccessMessage(scope, message, autoDismissMs)
+        } else {
+            clearSuccessMessage()
+        }
+    }
+
     private var listener: FirebaseAuth.AuthStateListener? = null
     private var lastObservedUid: String? = runCatching { Firebase.auth.currentUser?.uid }.getOrNull()
     private var loadJob: Job? = null
@@ -124,12 +160,14 @@ class MyHealthUiState {
     }
 
     fun stop() {
+        clearSuccessMessage()
         val auth = runCatching { Firebase.auth }.getOrNull()
         listener?.let { auth?.removeAuthStateListener(it) }
         listener = null
     }
 
     fun load(scope: CoroutineScope) {
+        clearSuccessMessage()
         isSignedIn = FirestoreRepository.isSignedIn()
         if (!isSignedIn) {
             loadJob?.cancel()
@@ -277,7 +315,7 @@ class MyHealthUiState {
         aiAssistantInput = text
         aiAssistantError = null
         aiAssistantClarification = null
-        aiAssistantSuccessMessage = null
+        clearSuccessMessage()
     }
 
     fun clearAiAssistant() {
@@ -285,7 +323,7 @@ class MyHealthUiState {
         aiAssistantError = null
         aiAssistantClarification = null
         aiAssistantSuggestion = null
-        aiAssistantSuccessMessage = null
+        clearSuccessMessage()
     }
 
     fun dismissAiAssistantSuggestion() {
@@ -305,6 +343,7 @@ class MyHealthUiState {
     fun analyzeHealthStatement(scope: CoroutineScope, statementOverride: String? = null) {
         val statement = (statementOverride ?: aiAssistantInput).trim()
         if (statement.isEmpty() || isAiAssistantAnalyzing) return
+        clearSuccessMessage()
         if (!isSignedIn) {
             aiAssistantError = "Sign in with Google to organize your health profile."
             return
@@ -313,7 +352,6 @@ class MyHealthUiState {
         isAiAssistantAnalyzing = true
         aiAssistantError = null
         aiAssistantClarification = null
-        aiAssistantSuccessMessage = null
         aiAssistantSuggestion = null
 
         scope.launch {
@@ -329,14 +367,14 @@ class MyHealthUiState {
                             val (updatedProfile, changes) = res.value
                             profile = updatedProfile
                             if (changes.isNotEmpty()) {
-                                aiAssistantSuccessMessage = buildString {
+                                showSuccessMessage(scope, buildString {
                                     appendLine("Updated your health profile:")
                                     changes.forEach { change ->
                                         appendLine("- $change")
                                     }
-                                }.trimEnd()
+                                }.trimEnd())
                             } else {
-                                aiAssistantSuccessMessage = "Profile is already up to date."
+                                showSuccessMessage(scope, "Profile is already up to date.")
                             }
                             aiAssistantInput = ""
                         }
@@ -347,7 +385,10 @@ class MyHealthUiState {
                 } else {
                     aiAssistantError = "No health details or actions were identified from your statement."
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
+                Log.e("MyHealthUiState", "analyzeHealthStatement failed: ${e.javaClass.name}: ${e.message}", e)
                 aiAssistantError = e.message ?: "Could not organize health details. Please check your connection."
             } finally {
                 isAiAssistantAnalyzing = false
@@ -462,13 +503,14 @@ class MyHealthUiState {
         if (isSavingProfile) return
         isSavingProfile = true
         aiAssistantError = null
+        clearSuccessMessage()
 
         scope.launch {
             when (val result = FirestoreRepository.mergeHealthContext(suggestion)) {
                 is StoreResult.Success -> {
                     profile = result.value
                     val count = suggestion.totalCount
-                    aiAssistantSuccessMessage = "Successfully added $count item" + (if (count == 1) "" else "s") + " to your health profile!"
+                    showSuccessMessage(scope, "Successfully added $count item" + (if (count == 1) "" else "s") + " to your health profile!")
                     aiAssistantSuggestion = null
                     aiAssistantInput = ""
                     noteDraft = ""

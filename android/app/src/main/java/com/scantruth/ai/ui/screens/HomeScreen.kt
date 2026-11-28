@@ -189,14 +189,14 @@ fun HomeScreen(
 
             state.recentScans.isEmpty() -> item {
                 EmptyStateCard(
-                    icon = AppIcons.Sparkle,
-                    title = "Nothing analysed yet",
+                    icon = AppIcons.Document,
+                    title = "",
                     body = if (state.isSignedIn) {
-                        "Scan an ingredient label or add a medical report. Your results appear here."
+                        "No saved analyses yet"
                     } else {
-                        "Scans run while signed out are not stored. Sign in to keep a history."
+                        "Sign in from the Profile tab to see your saved scans"
                     },
-                    actionLabel = "Scan a label",
+                    actionLabel = "Scan a product",
                     onAction = onScan
                 )
             }
@@ -468,7 +468,7 @@ private fun MedicalContextCard(
     AppCard {
         Column(modifier = Modifier.padding(20.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                IconTile(icon = AppIcons.HeartPulse, size = 40)
+                IconTile(icon = AppIcons.HeartFile, size = 42)
                 Column(modifier = Modifier.padding(start = 12.dp).weight(1f)) {
                     Text(
                         text = if (profile.itemCount == 0) {
@@ -565,30 +565,33 @@ private fun MedicalContextCard(
 
 @Composable
 private fun RecentAnalysisRow(record: ScanRecord, onClick: () -> Unit) {
-    AppCard(modifier = Modifier.clip(MaterialTheme.shapes.large).clickable(onClick = onClick)) {
+    AppCard(modifier = Modifier.clip(RoundedCornerShape(18.dp)).clickable(onClick = onClick)) {
         Row(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            val isMedicine = record.subtitle.equals("Medicine", ignoreCase = true)
             IconTile(
-                icon = if (record.kind == ScanKind.MEDICAL_REPORT) {
-                    AppIcons.Document
-                } else {
-                    AppIcons.Pill
+                icon = when {
+                    record.kind == ScanKind.MEDICAL_REPORT -> AppIcons.Document
+                    isMedicine -> AppIcons.Pill
+                    else -> AppIcons.Leaf
                 },
                 size = 42
             )
 
             Column(
                 modifier = Modifier
-                    .padding(start = 14.dp)
+                    .padding(start = 12.dp)
                     .weight(1f)
             ) {
                 Text(
                     text = record.title,
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurface
+                    color = Brand.TextPrimary,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                 )
                 Text(
                     text = listOfNotNull(
@@ -596,8 +599,10 @@ private fun RecentAnalysisRow(record: ScanRecord, onClick: () -> Unit) {
                         formatShortDate(record.scannedAtMillis).takeIf { it.isNotBlank() }
                     ).joinToString(" · "),
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 3.dp)
+                    color = Brand.TextSecondary,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 2.dp)
                 )
             }
 
@@ -609,41 +614,45 @@ private fun RecentAnalysisRow(record: ScanRecord, onClick: () -> Unit) {
     }
 }
 
-/** Compact score pill: colour is derived from the stored score, never invented. */
+/** Compact score pill matching web .score-pill */
 @Composable
 private fun ScoreBadge(score: Int) {
-    val (background, foreground, border) = when {
-        score >= 70 -> Triple(Brand.Soft, Brand.Primary, Brand.Secondary.copy(alpha = 0.35f))
-        score >= 40 -> Triple(Brand.WarningSoft, Brand.Warning, Brand.Warning.copy(alpha = 0.35f))
-        else -> Triple(Brand.DangerSoft, Brand.Danger, Brand.Danger.copy(alpha = 0.35f))
+    val tone = when {
+        score >= 70 -> Brand.Good
+        score >= 40 -> Brand.Care
+        else -> Brand.Avoid
     }
 
     Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = background,
-        border = BorderStroke(1.dp, border)
+        shape = RoundedCornerShape(100),
+        color = tone.copy(alpha = 0.12f),
+        border = BorderStroke(1.dp, tone.copy(alpha = 0.35f))
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
         ) {
             Box(
                 modifier = Modifier
                     .size(6.dp)
-                    .background(foreground, CircleShape)
+                    .background(tone, CircleShape)
             )
             Text(
                 text = "$score",
-                style = MaterialTheme.typography.labelLarge,
-                color = foreground,
-                fontWeight = FontWeight.Bold
+                style = MaterialTheme.typography.labelMedium.copy(
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold
+                ),
+                color = tone
             )
             Text(
                 text = "/100",
-                style = MaterialTheme.typography.labelSmall,
-                color = foreground.copy(alpha = 0.7f),
-                fontSize = 10.sp
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Normal
+                ),
+                color = Brand.TextSecondary
             )
         }
     }

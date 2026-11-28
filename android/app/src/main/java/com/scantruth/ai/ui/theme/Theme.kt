@@ -77,13 +77,13 @@ private val DarkColorScheme = darkColorScheme(
     onErrorContainer = Color(0xFFF9DEDC)
 )
 
-/** Generous rounded cards and sheets, matching the reference layout. */
+/** Rounded cards and sheets matching the web design tokens. */
 val ScanTruthShapes = Shapes(
     extraSmall = RoundedCornerShape(8.dp),
     small = RoundedCornerShape(12.dp),
-    medium = RoundedCornerShape(16.dp),
-    large = RoundedCornerShape(22.dp),
-    extraLarge = RoundedCornerShape(28.dp)
+    medium = RoundedCornerShape(14.dp),
+    large = RoundedCornerShape(20.dp),
+    extraLarge = RoundedCornerShape(26.dp)
 )
 
 @Composable

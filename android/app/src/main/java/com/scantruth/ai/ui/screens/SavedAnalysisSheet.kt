@@ -32,12 +32,12 @@ import com.scantruth.ai.model.ScanRecord
 import com.scantruth.ai.ui.components.AppCard
 import com.scantruth.ai.ui.theme.Brand
 
-/** Score colour from the shared rubric. */
+/** Score colour matching web rubric: good #33a666, care #ff9500, avoid #ff3b30. */
 internal fun scoreTone(score: Int?): Color = when {
     score == null -> Brand.Primary
-    score >= 70 -> Brand.Primary
-    score >= 40 -> Brand.Warning
-    else -> Brand.Danger
+    score >= 70 -> Brand.Good
+    score >= 40 -> Brand.Care
+    else -> Brand.Avoid
 }
 
 /**
@@ -181,14 +181,27 @@ fun SavedAnalysisSheet(record: ScanRecord, onDismiss: () -> Unit) {
                                         )
                                     }
                                 }
-                                item.status?.let {
-                                    Text(
-                                        text = it,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                item.status?.let { rawStatus ->
+                                    val normalized = com.scantruth.ai.domain.IngredientParser.normaliseVerdict(rawStatus)
+                                    val (statusLabel, fg, bg) = when (normalized) {
+                                        com.scantruth.ai.model.VerdictLevel.SAFE -> Triple("SAFE", Brand.Good, Brand.Soft)
+                                        com.scantruth.ai.model.VerdictLevel.AVOID -> Triple("AVOID", Brand.Avoid, Brand.Avoid.copy(alpha = 0.12f))
+                                        com.scantruth.ai.model.VerdictLevel.CAUTION -> Triple("CAUTION", Brand.Care, Brand.Care.copy(alpha = 0.14f))
+                                        com.scantruth.ai.model.VerdictLevel.UNKNOWN -> Triple(rawStatus.uppercase(), Brand.TextSecondary, Brand.SoftRaised)
+                                    }
+                                    Surface(
+                                        shape = RoundedCornerShape(100),
+                                        color = bg,
                                         modifier = Modifier.padding(start = 8.dp)
-                                    )
+                                    ) {
+                                        Text(
+                                            text = statusLabel,
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = fg,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                        )
+                                    }
                                 }
                             }
                         }

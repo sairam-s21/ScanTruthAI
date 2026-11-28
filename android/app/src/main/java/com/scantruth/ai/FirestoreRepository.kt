@@ -7,6 +7,7 @@ import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.SetOptions
+import com.google.firebase.firestore.Source
 import com.google.firebase.firestore.firestore
 import com.scantruth.ai.model.HealthActionItem
 import com.scantruth.ai.model.IngredientAnalysis
@@ -83,11 +84,21 @@ object FirestoreRepository {
 
     // --------------------------------------------------------------- medical profile
 
-    suspend fun loadMedicalProfile(): StoreResult<MedicalProfile?> {
+    suspend fun loadMedicalProfile(preferCache: Boolean = false): StoreResult<MedicalProfile?> {
         val uid = userIdOrNull() ?: return signedOut()
         return firestoreCall {
-            val snapshot = profileDocument(uid).get().await()
-            if (snapshot.exists()) snapshot.toMedicalProfile() else null
+            val doc = profileDocument(uid)
+            val snapshot = if (preferCache) {
+                runCatching { doc.get(Source.CACHE).await() }
+                    .getOrNull()
+                    ?.takeIf { it.exists() }
+                    ?: withTimeoutOrNull(1_500L) { runCatching { doc.get().await() }.getOrNull() }
+            } else {
+                runCatching { doc.get().await() }.getOrElse { serverErr ->
+                    runCatching { doc.get(Source.CACHE).await() }.getOrNull() ?: throw serverErr
+                }
+            }
+            if (snapshot != null && snapshot.exists()) snapshot.toMedicalProfile() else null
         }
     }
 
@@ -279,7 +290,8 @@ object FirestoreRepository {
                             when (item.verdict) {
                                 VerdictLevel.CAUTION -> "Caution"
                                 VerdictLevel.AVOID -> "Avoid"
-                                else -> "Okay"
+                                VerdictLevel.UNKNOWN -> "Unknown"
+                                VerdictLevel.SAFE -> "Okay"
                             }
                         )
                     }
@@ -292,6 +304,7 @@ object FirestoreRepository {
             put(
                 "modelUsed",
                 when {
+                    analysis.engine == AiEngine.OFFLINE -> "On-Device Rule Engine (Offline)"
                     analysis.engine == AiEngine.ON_DEVICE -> "Gemini Nano (On-Device)"
                     analysis.usedFallback -> "Gemini 3.5 Flash Lite (Cloud Fallback)"
                     else -> "Gemini 3.5 Flash Lite"
@@ -313,6 +326,17 @@ object FirestoreRepository {
                 .map { document -> document.toScanRecord() }
                 // Older builds also logged reports here; reports are listed in My Health.
                 .filter { it.kind != ScanKind.MEDICAL_REPORT }
+        }
+    }
+
+    suspend fun deleteScanRecord(scanId: String): StoreResult<Unit> {
+        val uid = userIdOrNull() ?: return signedOut()
+        return firestoreCall {
+            db.collection(USERS).document(uid)
+                .collection(SCANS_SUBCOLLECTION)
+                .document(scanId)
+                .delete()
+                .await()
         }
     }
 

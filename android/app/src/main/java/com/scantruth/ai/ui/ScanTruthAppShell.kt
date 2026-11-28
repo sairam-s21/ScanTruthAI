@@ -19,6 +19,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -27,7 +28,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.scantruth.ai.ui.theme.Brand
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.google.firebase.Firebase
@@ -64,6 +68,12 @@ fun ScanTruthAppShell() {
     // Global observation of auth state and analysis lifecycle for data consistency.
     val shellScope = rememberCoroutineScope()
     val lastUid = remember { arrayOfNulls<String>(1) }
+    LaunchedEffect(healthState.profile, healthState.isSignedIn, healthState.isLoading) {
+        if (healthState.isSignedIn && !healthState.isLoading) {
+            ingredientState.updateProfileCache(healthState.profile)
+        }
+    }
+
     DisposableEffect(Unit) {
         homeState.start(shellScope)
         healthState.start(shellScope)
@@ -71,6 +81,7 @@ fun ScanTruthAppShell() {
         reportState.onReportSaved = {
             homeState.refresh(shellScope)
             healthState.load(shellScope)
+            ingredientState.invalidateProfileCache()
         }
         ingredientState.onScanSaved = {
             homeState.refresh(shellScope)
@@ -80,6 +91,9 @@ fun ScanTruthAppShell() {
         lastUid[0] = auth.currentUser?.uid
         val listener = FirebaseAuth.AuthStateListener { firebaseAuth ->
             val uid = firebaseAuth.currentUser?.uid
+            if (uid != lastUid[0]) {
+                ingredientState.invalidateProfileCache()
+            }
             if (lastUid[0] != null && uid == null) {
                 reportState.clearSensitive()
             }
@@ -174,19 +188,19 @@ private fun NavigationPill(
         targetValue = if (selected) {
             MaterialTheme.colorScheme.onPrimary
         } else {
-            MaterialTheme.colorScheme.onSurfaceVariant
+            Brand.TextTertiary
         },
         label = "navContent"
     )
     val verticalPadding by animateDpAsState(
-        targetValue = if (selected) 9.dp else 7.dp,
+        targetValue = if (selected) 9.dp else 8.dp,
         label = "navPadding"
     )
 
     Column(
         modifier = modifier
-            .padding(horizontal = 3.dp)
-            .clip(RoundedCornerShape(16.dp))
+            .padding(horizontal = 2.dp)
+            .clip(RoundedCornerShape(22.dp))
             .background(container)
             .clickable(enabled = !selected, onClick = onClick)
             .padding(vertical = verticalPadding),
@@ -200,9 +214,10 @@ private fun NavigationPill(
         )
         Text(
             text = label,
-            style = MaterialTheme.typography.labelSmall,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
             color = content,
-            modifier = Modifier.padding(top = 3.dp)
+            modifier = Modifier.padding(top = 4.dp)
         )
     }
 }
@@ -210,6 +225,6 @@ private fun NavigationPill(
 private fun tabIcon(route: String): ImageVector = when (route) {
     ScanTruthDestination.HOME -> AppIcons.Leaf
     ScanTruthDestination.SCAN -> ScanFrameIcon
-    ScanTruthDestination.MY_HEALTH -> AppIcons.HeartPulse
+    ScanTruthDestination.MY_HEALTH -> AppIcons.HeartFile
     else -> AppIcons.Person
 }

@@ -88,20 +88,26 @@ object PrivacyMasker {
         Rule(
             IdentifierCategory.PATIENT_ID,
             Regex(
-                "(?i)\\b(?:patient\\s*(?:id|no\\.?|number)|mrn|uhid|" +
-                    "reg(?:istration)?\\s*(?:no\\.?|number))\\b\\s*[:#\\-]?\\s*" +
+                "(?i)\\b(?:patient\\s*(?:id|no\\.?|number|code)|mrn|uhid|" +
+                    "reg(?:istration)?\\s*(?:id|no\\.?|number))\\b\\s*[:#\\-]?\\s*" +
                     "([A-Za-z0-9][A-Za-z0-9/\\-]{2,})"
             ),
-            valueGroup = 1
+            valueGroup = 1,
+            validator = { it.any(Char::isDigit) }
         ),
         Rule(
             IdentifierCategory.HOSPITAL_ID,
             Regex(
-                "(?i)\\b(?:hospital\\s*(?:id|no\\.?)|lab\\s*(?:id|no\\.?)|" +
-                    "accession\\s*(?:no\\.?|number)|report\\s*id|sample\\s*id|" +
-                    "barcode)\\b\\s*[:#\\-]?\\s*([A-Za-z0-9][A-Za-z0-9/\\-]{2,})"
+                "(?i)\\b(?:hospital\\s*(?:id|no\\.?|number)|lab\\s*(?:id|no\\.?|number|code)|" +
+                    "accession\\s*(?:id|no\\.?|number)|report\\s*(?:id|no\\.?|number|code)|" +
+                    "sample\\s*(?:id|no\\.?|number)|specimen\\s*(?:id|no\\.?|number)|" +
+                    "order\\s*(?:id|no\\.?|number)|test\\s*(?:id|no\\.?)|" +
+                    "req(?:uisition)?\\s*(?:id|no\\.?|number)|visit\\s*(?:id|no\\.?)|" +
+                    "clinic\\s*(?:id|no\\.?)|barcode)\\b\\s*[:#\\-]?\\s*" +
+                    "([A-Za-z0-9][A-Za-z0-9/\\-]{2,})"
             ),
-            valueGroup = 1
+            valueGroup = 1,
+            validator = { it.any(Char::isDigit) }
         ),
         Rule(
             IdentifierCategory.DATE_OF_BIRTH,

@@ -50,6 +50,7 @@ import com.scantruth.ai.ui.components.LoadingPanel
 import com.scantruth.ai.ui.components.ScreenHeader
 import com.scantruth.ai.ui.state.ReportAnalysisState
 import com.scantruth.ai.ui.state.ReportStep
+import com.scantruth.ai.ui.theme.Brand
 
 /**
  * Step 6-8 of the medical pipeline: the user sees exactly what will be sent, what is
@@ -355,9 +356,9 @@ private fun AlertRow(alert: PrivacyAlert) {
             imageVector = AppIcons.AlertTriangle,
             contentDescription = null,
             tint = if (blocking) {
-                MaterialTheme.colorScheme.error
+                Brand.Danger
             } else {
-                MaterialTheme.colorScheme.onSurfaceVariant
+                Brand.Care
             },
             modifier = Modifier
                 .padding(top = 2.dp)

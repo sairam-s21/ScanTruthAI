@@ -1,16 +1,25 @@
 package com.scantruth.ai.model
 
-/** Which engine produced an AI answer. Always shown to the user, never guessed. */
+/** Which engine produced an analysis. Always shown to the user, never guessed. */
 enum class AiEngine(val label: String) {
-    CLOUD("Gemini cloud"),
-    ON_DEVICE("Gemini Nano · on-device")
+    CLOUD("Gemini Flash · cloud"),
+    ON_DEVICE("Gemini Nano · on-device"),
+    OFFLINE("Offline rules · on-device")
 }
 
 /** The AI modes the Scan screen offers. */
 enum class AiMode(val label: String) {
     AUTO("Auto"),
-    FLASH("Gemini Flash"),
-    NANO("Nano")
+    NANO("Nano"),
+    ON_DEVICE("On-device");
+
+    companion object {
+        fun fromWire(value: String?): AiMode = when (value?.trim()?.uppercase()) {
+            "FLASH" -> AUTO
+            "LOCAL", "OFFLINE", "ON_DEVICE" -> ON_DEVICE
+            else -> entries.firstOrNull { it.name.equals(value?.trim(), ignoreCase = true) } ?: AUTO
+        }
+    }
 }
 
 /** The kinds of personal identifier the local privacy layer looks for. */
@@ -333,8 +342,21 @@ enum class VerdictLevel { SAFE, CAUTION, AVOID, UNKNOWN }
 data class IngredientVerdict(
     val name: String,
     val verdict: VerdictLevel,
-    val note: String?
+    val note: String?,
+    val conflict: String? = null
 )
+
+/** Stage-by-stage timing breakdown for scanning & inference diagnostics (in milliseconds). */
+data class ScanPerformanceMetrics(
+    val ocrDurationMs: Long = 0L,
+    val parseDurationMs: Long = 0L,
+    val profileLoadMs: Long = 0L,
+    val aiInferenceDurationMs: Long = 0L,
+    val postProcessDurationMs: Long = 0L
+) {
+    val totalScanMs: Long get() = ocrDurationMs + parseDurationMs
+    val totalAnalysisMs: Long get() = profileLoadMs + aiInferenceDurationMs + postProcessDurationMs
+}
 
 /** Structured result of one ingredient analysis. */
 data class IngredientAnalysis(

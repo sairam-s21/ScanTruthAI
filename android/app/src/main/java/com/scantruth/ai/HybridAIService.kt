@@ -1,5 +1,6 @@
 package com.scantruth.ai
 
+import android.util.Log
 import com.google.firebase.Firebase
 import com.google.firebase.ai.DownloadStatus
 import com.google.firebase.ai.InferenceMode
@@ -13,6 +14,7 @@ import com.scantruth.ai.ai.AiResponseParser
 import com.scantruth.ai.ai.InferenceAttempt
 import com.scantruth.ai.ai.IngredientModePlanner
 import com.scantruth.ai.ai.ParseResult
+import com.scantruth.ai.domain.OfflineIngredientAnalyzer
 import com.scantruth.ai.model.AiEngine
 import com.scantruth.ai.model.AiMode
 import com.scantruth.ai.model.FallbackNotices
@@ -25,9 +27,14 @@ import com.scantruth.ai.model.MedicalExtraction
 import com.scantruth.ai.model.MedicalProfile
 import com.scantruth.ai.privacy.NanoMaskScan
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import kotlin.random.Random
 
 enum class AiFailureKind {
     NANO_UNAVAILABLE,
@@ -142,7 +149,8 @@ object HybridAIService {
                                 mapOf(
                                     "name" to Schema.string(),
                                     "verdict" to Schema.string(),
-                                    "note" to Schema.string()
+                                    "note" to Schema.string(),
+                                    "conflict" to Schema.string()
                                 )
                             )
                         ),
@@ -203,28 +211,49 @@ object HybridAIService {
 
     // ------------------------------------------------------------- on-device state
 
+    private const val NANO_CACHE_TTL_MS = 60_000L
+
+    @Volatile
+    private var cachedNanoStatus: NanoAvailability? = null
+
+    @Volatile
+    private var cachedNanoAtMs: Long = 0L
+
     /** Checks AICore / Gemini Nano without ever pretending it is available. */
-    suspend fun nanoAvailability(): NanoAvailability = withContext(Dispatchers.Default) {
-        try {
-            val extension = nanoModel.onDeviceExtension
-                ?: return@withContext NanoAvailability.Unsupported(UNSUPPORTED_MESSAGE)
-            when (extension.checkStatus()) {
-                OnDeviceModelStatus.AVAILABLE -> NanoAvailability.Available
-                OnDeviceModelStatus.DOWNLOADABLE -> NanoAvailability.Downloadable
-                OnDeviceModelStatus.DOWNLOADING -> NanoAvailability.Downloading
-                else -> NanoAvailability.Unsupported(UNSUPPORTED_MESSAGE)
+    suspend fun nanoAvailability(forceRefresh: Boolean = false): NanoAvailability =
+        withContext(Dispatchers.Default) {
+            val now = System.currentTimeMillis()
+            val cached = cachedNanoStatus
+            if (!forceRefresh && cached != null && (now - cachedNanoAtMs) < NANO_CACHE_TTL_MS) {
+                return@withContext cached
             }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            NanoAvailability.Unsupported(UNSUPPORTED_MESSAGE)
+            val result = try {
+                val extension = nanoModel.onDeviceExtension
+                    ?: return@withContext NanoAvailability.Unsupported(UNSUPPORTED_MESSAGE).also {
+                        cachedNanoStatus = it
+                        cachedNanoAtMs = now
+                    }
+                when (extension.checkStatus()) {
+                    OnDeviceModelStatus.AVAILABLE -> NanoAvailability.Available
+                    OnDeviceModelStatus.DOWNLOADABLE -> NanoAvailability.Downloadable
+                    OnDeviceModelStatus.DOWNLOADING -> NanoAvailability.Downloading
+                    else -> NanoAvailability.Unsupported(UNSUPPORTED_MESSAGE)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                NanoAvailability.Unsupported(UNSUPPORTED_MESSAGE)
+            }
+            cachedNanoStatus = result
+            cachedNanoAtMs = System.currentTimeMillis()
+            result
         }
-    }
 
     /** Streams the model download, when this device and account are allowed to. */
     suspend fun downloadNano(
         onProgress: (NanoDownloadProgress) -> Unit
     ): Result<Unit> = withContext(Dispatchers.Default) {
+        cachedNanoStatus = null
         try {
             val extension = nanoModel.onDeviceExtension
                 ?: return@withContext Result.failure(
@@ -332,10 +361,13 @@ object HybridAIService {
         val raw = generate({ healthContextAssistant }, prompt, AiEngine.CLOUD)
         return when (val parsed = AiResponseParser.parseHealthActions(raw, cleanInput)) {
             is ParseResult.Success -> parsed.value
-            is ParseResult.Invalid -> throw AiAnalysisException(
-                AiFailureKind.INVALID_RESPONSE,
-                parsed.reason
-            )
+            is ParseResult.Invalid -> {
+                Log.e("HybridAIService", "Health action parsing returned invalid: ${parsed.reason}")
+                throw AiAnalysisException(
+                    AiFailureKind.INVALID_RESPONSE,
+                    parsed.reason
+                )
+            }
         }
     }
 
@@ -356,10 +388,13 @@ object HybridAIService {
         val raw = generate({ healthContextAssistant }, prompt, AiEngine.CLOUD)
         return when (val parsed = AiResponseParser.parseHealthContext(raw, cleanInput)) {
             is ParseResult.Success -> parsed.value
-            is ParseResult.Invalid -> throw AiAnalysisException(
-                AiFailureKind.INVALID_RESPONSE,
-                parsed.reason
-            )
+            is ParseResult.Invalid -> {
+                Log.e("HybridAIService", "Health context parsing returned invalid: ${parsed.reason}")
+                throw AiAnalysisException(
+                    AiFailureKind.INVALID_RESPONSE,
+                    parsed.reason
+                )
+            }
         }
     }
 
@@ -368,7 +403,36 @@ object HybridAIService {
     suspend fun analyzeIngredients(
         ingredients: List<String>,
         profile: MedicalProfile,
-        mode: AiMode
+        mode: AiMode,
+        allergenDeclarations: List<String> = emptyList(),
+        rawOcrText: String = ""
+    ): IngredientAnalysis = analyzeIngredientsWith(
+        ingredients = ingredients,
+        profile = profile,
+        mode = mode,
+        allergenDeclarations = allergenDeclarations,
+        rawOcrText = rawOcrText
+    )
+
+    internal suspend fun analyzeIngredientsWith(
+        ingredients: List<String>,
+        profile: MedicalProfile,
+        mode: AiMode,
+        allergenDeclarations: List<String> = emptyList(),
+        rawOcrText: String = "",
+        nanoChecker: suspend () -> NanoAvailability = { nanoAvailability() },
+        cloudRunner: suspend (prompt: String, usedFallback: Boolean) -> IngredientAnalysis = ::cloudIngredientAnalysis,
+        nanoRunner: suspend (prompt: String, availability: NanoAvailability) -> IngredientAnalysis = ::onDeviceIngredientAnalysis,
+        offlineRunner: suspend (
+            ingredients: List<String>,
+            profile: MedicalProfile,
+            allergenDeclarations: List<String>,
+            rawOcrText: String
+        ) -> IngredientAnalysis = { list, medProfile, declarations, ocr ->
+            withContext(offlineDispatcher) {
+                OfflineIngredientAnalyzer.analyze(list, medProfile, declarations, ocr)
+            }
+        }
     ): IngredientAnalysis {
         if (ingredients.isEmpty()) {
             throw AiAnalysisException(
@@ -379,26 +443,32 @@ object HybridAIService {
         val prompt = ingredientPrompt(ingredients, profile)
 
         // IngredientModePlanner holds the documented policy and is unit-tested directly.
-        // NANO plans a single on-device attempt, so this loop can never reach the cloud
-        // in that mode and the approved profile stays on the device.
-        val nanoReady = mode == AiMode.AUTO && nanoAvailability() is NanoAvailability.Available
-        val attempts = IngredientModePlanner.plan(mode, nanoReady)
+        // Only check Gemini Nano when NANO is selected; AUTO (Gemini Flash) and ON_DEVICE
+        // (independent offline analyzer) never check or depend on AICore/Nano.
+        val attempts = IngredientModePlanner.plan(mode)
 
         var lastFailure: Exception? = null
         for ((index, attempt) in attempts.withIndex()) {
             try {
                 return when (attempt) {
-                    InferenceAttempt.ON_DEVICE -> onDeviceIngredientAnalysis(prompt)
-                    InferenceAttempt.CLOUD -> cloudIngredientAnalysis(
-                        prompt = prompt,
-                        usedFallback = IngredientModePlanner.cloudCountsAsFallback(mode)
+                    InferenceAttempt.CLOUD -> cloudRunner(
+                        prompt,
+                        IngredientModePlanner.cloudCountsAsFallback(mode)
+                    )
+                    InferenceAttempt.NANO -> nanoRunner(
+                        prompt,
+                        nanoChecker()
+                    )
+                    InferenceAttempt.OFFLINE -> offlineRunner(
+                        ingredients,
+                        profile,
+                        allergenDeclarations,
+                        rawOcrText
                     )
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                // FLASH and NANO have exactly one attempt, so this rethrow is what keeps
-                // a failed on-device run from ever becoming a cloud call in NANO mode.
                 lastFailure = e
                 if (index == attempts.lastIndex) throw e
             }
@@ -433,8 +503,11 @@ object HybridAIService {
         }
     }
 
-    private suspend fun onDeviceIngredientAnalysis(prompt: String): IngredientAnalysis {
-        when (val availability = nanoAvailability()) {
+    private suspend fun onDeviceIngredientAnalysis(
+        prompt: String,
+        availability: NanoAvailability
+    ): IngredientAnalysis {
+        when (availability) {
             is NanoAvailability.Available -> Unit
             is NanoAvailability.Downloadable -> throw AiAnalysisException(
                 AiFailureKind.NANO_UNAVAILABLE,
@@ -509,34 +582,119 @@ object HybridAIService {
 
     // ----------------------------------------------------------------- helpers
 
+    internal var backoffDelay: suspend (Long) -> Unit = { delay(it) }
+    internal var offlineDispatcher: CoroutineDispatcher = Dispatchers.Default
+
+    internal fun isRetryable(e: Exception): Boolean {
+        if (e is CancellationException) return false
+        if (e is com.google.firebase.ai.type.InvalidAPIKeyException ||
+            e is com.google.firebase.ai.type.PromptBlockedException ||
+            e is com.google.firebase.ai.type.ContentBlockedException ||
+            e is com.google.firebase.ai.type.SerializationException ||
+            e is com.google.firebase.ai.type.ServiceDisabledException ||
+            e is com.google.firebase.ai.type.UnsupportedUserLocationException ||
+            e is com.google.firebase.ai.type.APINotConfiguredException
+        ) {
+            return false
+        }
+        val msg = e.message?.lowercase().orEmpty()
+        if (msg.contains("not found") || msg.contains("invalid api key") || msg.contains("permission_denied")) {
+            return false
+        }
+        if (e is com.google.firebase.ai.type.ServerException ||
+            e is com.google.firebase.ai.type.QuotaExceededException ||
+            e is com.google.firebase.ai.type.RequestTimeoutException
+        ) {
+            return true
+        }
+        return msg.contains("503") ||
+            msg.contains("429") ||
+            msg.contains("high demand") ||
+            msg.contains("spikes in demand") ||
+            msg.contains("resource exhausted") ||
+            msg.contains("rate limit") ||
+            msg.contains("unavailable") ||
+            msg.contains("timeout")
+    }
+
+    private const val CLOUD_TIMEOUT_MS = 22_000L
+    private const val ON_DEVICE_TIMEOUT_MS = 18_000L
+
+    private class RequestTimedOutException(cause: Throwable) :
+        Exception("Request timeout after bound", cause)
+
+    internal suspend fun executeWithRetry(
+        engine: AiEngine,
+        timeoutMs: Long = if (engine == AiEngine.CLOUD) CLOUD_TIMEOUT_MS else ON_DEVICE_TIMEOUT_MS,
+        call: suspend () -> String?
+    ): String {
+        val maxAttempts = if (engine == AiEngine.CLOUD) 3 else 1
+        var lastException: Exception? = null
+
+        for (attempt in 1..maxAttempts) {
+            try {
+                val response = withTimeout(timeoutMs) { call() }
+                if (!response.isNullOrBlank()) {
+                    return response
+                }
+            } catch (e: TimeoutCancellationException) {
+                val timeoutErr = RequestTimedOutException(e)
+                lastException = timeoutErr
+                Log.e("HybridAIService", "Firebase AI Logic request timed out after ${timeoutMs}ms (attempt $attempt/$maxAttempts)")
+                if (engine == AiEngine.CLOUD && attempt == 1) {
+                    backoffDelay(1000L)
+                    continue
+                }
+                throw AiAnalysisException(
+                    if (engine == AiEngine.CLOUD) AiFailureKind.CLOUD_UNAVAILABLE else AiFailureKind.UNKNOWN,
+                    if (engine == AiEngine.CLOUD) {
+                        "The cloud analysis timed out. Check your connection and try again."
+                    } else {
+                        "On-device analysis timed out on this device."
+                    },
+                    timeoutErr
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                lastException = e
+                if (engine == AiEngine.CLOUD) {
+                    Log.e("HybridAIService", "Firebase AI Logic cloud generation failure (attempt $attempt/$maxAttempts): ${e.javaClass.name}: ${e.message}", e)
+                    if (attempt < maxAttempts && isRetryable(e)) {
+                        // Exponential backoff: 1s (attempt 1), 2s (attempt 2), plus 0-250ms random jitter
+                        val baseDelay = if (attempt == 1) 1000L else 2000L
+                        val jitter = Random.nextLong(0, 250)
+                        backoffDelay(baseDelay + jitter)
+                        continue
+                    }
+                    throw AiAnalysisException(AiFailureKind.CLOUD_UNAVAILABLE, cloudMessage(e), e)
+                }
+                Log.e("HybridAIService", "Firebase AI Logic on-device generation failure: ${e.javaClass.name}: ${e.message}", e)
+                throw AiAnalysisException(
+                    AiFailureKind.UNKNOWN,
+                    "Gemini Nano could not complete this analysis on this device.",
+                    e
+                )
+            }
+        }
+
+        throw AiAnalysisException(
+            AiFailureKind.INVALID_RESPONSE,
+            if (engine == AiEngine.CLOUD) {
+                lastException?.let { cloudMessage(it) } ?: "The AI returned an empty response."
+            } else {
+                "Gemini Nano returned an empty response."
+            },
+            lastException
+        )
+    }
+
     private suspend fun generate(
         model: () -> com.google.firebase.ai.GenerativeModel,
         prompt: String,
         engine: AiEngine
-    ): String {
-        val response = try {
-            model().generateContent(prompt).text
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            if (engine == AiEngine.CLOUD) {
-                throw AiAnalysisException(AiFailureKind.CLOUD_UNAVAILABLE, cloudMessage(e), e)
-            }
-            throw AiAnalysisException(
-                AiFailureKind.UNKNOWN,
-                "Gemini Nano could not complete this analysis on this device.",
-                e
-            )
-        }
-        return response?.takeIf { it.isNotBlank() }
-            ?: throw AiAnalysisException(
-                AiFailureKind.INVALID_RESPONSE,
-                if (engine == AiEngine.CLOUD) {
-                    "The AI returned an empty response."
-                } else {
-                    "Gemini Nano returned an empty response."
-                }
-            )
+    ): String = executeWithRetry(engine) {
+        model().generateContent(prompt).text
     }
 
     /**
@@ -544,8 +702,21 @@ object HybridAIService {
      * redacted report text, or a label's ingredient list — and that must not reach a UI
      * string that could be screenshotted, logged or shown to another person.
      */
-    private fun cloudMessage(e: Exception): String =
-        "The cloud analysis could not be completed. Check your connection and try again."
+    private fun cloudMessage(e: Exception): String {
+        val msg = e.message?.lowercase().orEmpty()
+        val isHighDemand = e is com.google.firebase.ai.type.ServerException ||
+            e is com.google.firebase.ai.type.QuotaExceededException ||
+            msg.contains("high demand") ||
+            msg.contains("503") ||
+            msg.contains("429") ||
+            msg.contains("resource exhausted") ||
+            msg.contains("spikes in demand")
+        return if (isHighDemand) {
+            "The AI service is experiencing high demand. Please try again in a moment."
+        } else {
+            "The cloud analysis could not be completed. Check your connection and try again."
+        }
+    }
 
     private fun medicalExtractionPrompt(redactedText: String): String = buildString {
         appendLine("You extract structured data from anonymised medical reports.")
@@ -636,21 +807,22 @@ object HybridAIService {
         }
 
         return buildString {
-            appendLine("You review an ingredient list against a user's own health profile.")
-            appendLine(
-                "You are not a doctor. Describe general, well-established nutrition and " +
-                    "allergen information only. Do not diagnose, prescribe or claim to treat " +
-                    "any condition. If the evidence is unclear, say so in uncertaintyNotes."
-            )
-            appendLine("Score 70-100 for a good match, 40-69 for use with care, 0-39 for avoid.")
-            appendLine("Reply with JSON only, matching this shape:")
+            appendLine("Review each ingredient against the user's health profile using general nutrition and allergen facts only. Never diagnose or invent medical claims.")
+            appendLine("Score 70-100 good match, 40-69 use with care, 0-39 avoid.")
+            appendLine("For every ingredientBreakdown entry, classify verdict as:")
+            appendLine("- safe: clearly understood ingredient with no identified conflict against the health profile.")
+            appendLine("- avoid: conflicts with a recorded allergy, dietary restriction, or critical condition.")
+            appendLine("- caution: moderate concern, sensitivity, sugar/sodium impact, or partial uncertainty.")
+            appendLine("- unknown: unrecognized code, vague blend, or insufficient evidence; never mark unknown ingredients safe.")
+            appendLine("Set \"conflict\" to the matching profile condition/allergy/restriction name when verdict is avoid or caution, else \"\".")
+            appendLine("JSON shape:")
             appendLine(
                 "{\"productName\":\"\",\"productCategory\":\"\",\"safetyScore\":0," +
                     "\"badgeLabel\":\"\",\"headline\":\"\",\"aiSummary\":\"\"," +
                     "\"healthFactors\":[{\"label\":\"\",\"detail\":\"\"," +
                     "\"direction\":\"positive|caution|neutral\"}]," +
                     "\"ingredientBreakdown\":[{\"name\":\"\"," +
-                    "\"verdict\":\"safe|caution|avoid\",\"note\":\"\"}]," +
+                    "\"verdict\":\"safe|caution|avoid|unknown\",\"note\":\"\",\"conflict\":\"\"}]," +
                     "\"recommendedIntake\":\"\",\"uncertaintyNotes\":[]}"
             )
             preferenceRules().takeIf { it.isNotEmpty() }?.let { rules ->
@@ -752,6 +924,6 @@ object HybridAIService {
     }
 
     private const val UNSUPPORTED_MESSAGE =
-        "Gemini Nano is not available on this device, so on-device analysis cannot run here. " +
-            "Choose Auto or Flash to use the cloud model instead."
+        "Gemini Nano is not available on this device, so Nano mode cannot run here. " +
+            "Choose Auto (Gemini Flash) or On-device (Offline) instead."
 }

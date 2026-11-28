@@ -1,7 +1,7 @@
 package com.scantruth.ai.ui.screens
 
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,8 +12,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -22,31 +24,39 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.scantruth.ai.FirestoreRepository
 import com.scantruth.ai.FirestoreRepository.StoreResult
-import com.scantruth.ai.model.ScanKind
 import com.scantruth.ai.model.ScanRecord
-import com.scantruth.ai.ui.components.AppChip
+import com.scantruth.ai.ui.components.AppCard
 import com.scantruth.ai.ui.components.AppIcons
 import com.scantruth.ai.ui.components.ErrorPanel
 import com.scantruth.ai.ui.components.LoadingPanel
 import com.scantruth.ai.ui.components.ScreenHeader
 import com.scantruth.ai.ui.components.formatTimestamp
+import com.scantruth.ai.ui.theme.Brand
+import kotlinx.coroutines.launch
 
 /**
- * Full scan history. Reads the signed-in user's own records; a signed-out visitor is
- * told plainly that nothing was stored rather than being shown an empty fake list.
+ * Scan history screen matching Web HistorySheet design and terminology.
  */
 @Composable
 fun ScanHistoryScreen(
     onBack: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val scope = rememberCoroutineScope()
     var records by remember { mutableStateOf<List<ScanRecord>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -73,7 +83,7 @@ fun ScanHistoryScreen(
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 24.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item {
             ScreenHeader(
@@ -105,44 +115,70 @@ fun ScanHistoryScreen(
 
         if (!isLoading && signedOut) {
             item {
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = MaterialTheme.shapes.large,
-                    color = MaterialTheme.colorScheme.secondaryContainer
-                ) {
-                    Text(
-                        text = "Scans run while signed out are never stored. Sign in from " +
-                            "the Profile tab and your next scans appear here.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSecondaryContainer,
-                        modifier = Modifier.padding(16.dp)
-                    )
+                AppCard {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(32.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Icon(
+                            imageVector = AppIcons.Person,
+                            contentDescription = null,
+                            tint = Brand.TextSecondary,
+                            modifier = Modifier.size(28.dp)
+                        )
+                        Text(
+                            text = "Sign in from the Profile tab to see scans saved to your account, including ones from the iOS and Android apps.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Brand.TextSecondary,
+                            textAlign = TextAlign.Center
+                        )
+                    }
                 }
             }
         }
 
         if (!isLoading && !signedOut && records.isEmpty() && error == null) {
             item {
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = MaterialTheme.shapes.large,
-                    color = MaterialTheme.colorScheme.surface,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-                ) {
-                    Text(
-                        text = "Nothing here yet. A label analysis or a saved report will " +
-                            "show up in this list.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(16.dp)
-                    )
+                AppCard {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(32.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Icon(
+                            imageVector = AppIcons.Document,
+                            contentDescription = null,
+                            tint = Brand.TextSecondary,
+                            modifier = Modifier.size(28.dp)
+                        )
+                        Text(
+                            text = "No saved scans yet. Scans you make in any ScanTruthAI app will show up here.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Brand.TextSecondary,
+                            textAlign = TextAlign.Center
+                        )
+                    }
                 }
             }
         }
 
         items(count = records.size, key = { index -> records[index].id }) { index ->
             val record = records[index]
-            HistoryRow(record = record, onClick = { openRecord = record })
+            HistoryRow(
+                record = record,
+                onClick = { openRecord = record },
+                onDelete = {
+                    scope.launch {
+                        FirestoreRepository.deleteScanRecord(record.id)
+                        reloadKey += 1
+                    }
+                }
+            )
         }
     }
 
@@ -151,83 +187,124 @@ fun ScanHistoryScreen(
     }
 }
 
+/** History row matching web .history-row */
 @Composable
-private fun HistoryRow(record: ScanRecord, onClick: () -> Unit) {
-    Surface(
-        onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+private fun HistoryRow(
+    record: ScanRecord,
+    onClick: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val score = record.safetyScore
+    val tone = when {
+        score == null -> Brand.Primary
+        score >= 70 -> Brand.Good
+        score >= 40 -> Brand.Care
+        else -> Brand.Avoid
+    }
+
+    val detail = listOfNotNull(
+        formatTimestamp(record.scannedAtMillis).takeIf { it.isNotBlank() },
+        record.ingredientCount?.takeIf { it > 0 }?.let { "$it ingredients" }
+    ).joinToString(" · ")
+
+    AppCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(38.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.surfaceVariant),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = if (record.kind == ScanKind.MEDICAL_REPORT) {
-                            AppIcons.Document
-                        } else {
-                            AppIcons.Pill
-                        },
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(18.dp)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 14.dp, top = 12.dp, bottom = 12.dp, end = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Clickable area to open the analysis sheet
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .clickable(onClick = onClick),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                // ScoreRing matching web
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.size(48.dp)) {
+                    CircularProgressIndicator(
+                        progress = { 1f },
+                        modifier = Modifier.size(48.dp),
+                        color = tone.copy(alpha = 0.2f),
+                        strokeWidth = 5.dp
+                    )
+                    CircularProgressIndicator(
+                        progress = { (score ?: 0) / 100f },
+                        modifier = Modifier.size(48.dp),
+                        color = tone,
+                        strokeWidth = 5.dp,
+                        trackColor = Color.Transparent,
+                        strokeCap = StrokeCap.Round
+                    )
+                    Text(
+                        text = score?.toString() ?: "–",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Brand.TextPrimary
                     )
                 }
 
                 Column(
-                    modifier = Modifier
-                        .padding(start = 12.dp)
-                        .weight(1f)
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
                     Text(
-                        text = record.title,
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurface
+                        text = record.title.ifBlank { "Scanned product" },
+                        style = MaterialTheme.typography.titleSmall.copy(
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold
+                        ),
+                        color = Brand.TextPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = when {
-                            record.kind == ScanKind.MEDICAL_REPORT -> "Medical report"
-                            record.displayBadge != null -> record.displayBadge!!
-                            else -> "Ingredient label"
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (record.kind == ScanKind.MEDICAL_REPORT) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            scoreTone(record.safetyScore)
-                        }
+                        text = record.displayBadge ?: record.badgeLabel ?: "Scan",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        ),
+                        color = tone
                     )
+                    if (detail.isNotBlank()) {
+                        Text(
+                            text = detail,
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                fontSize = 11.sp
+                            ),
+                            color = Brand.TextSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
 
-                record.safetyScore?.let { score -> AppChip(text = "$score/100") }
-            }
-
-            if (record.subtitle.isNotBlank()) {
-                Text(
-                    text = record.subtitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 10.dp)
+                Icon(
+                    imageVector = AppIcons.ChevronRight,
+                    contentDescription = null,
+                    tint = Brand.TextTertiary,
+                    modifier = Modifier.size(15.dp)
                 )
             }
 
-            val detail = listOfNotNull(
-                formatTimestamp(record.scannedAtMillis).takeIf { it.isNotBlank() },
-                record.ingredientCount?.takeIf { it > 0 }?.let { "$it ingredients" }
-            ).joinToString(" · ")
-            if (detail.isNotBlank()) {
-                Text(
-                    text = detail,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 4.dp)
+            // Trash button matching web .icon-only
+            IconButton(
+                onClick = onDelete,
+                modifier = Modifier
+                    .padding(start = 4.dp)
+                    .size(36.dp)
+            ) {
+                Icon(
+                    imageVector = AppIcons.Trash,
+                    contentDescription = "Delete scan",
+                    tint = Brand.TextTertiary,
+                    modifier = Modifier.size(16.dp)
                 )
             }
         }

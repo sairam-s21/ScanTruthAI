@@ -5,7 +5,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,7 +12,6 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -31,10 +29,12 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -46,22 +46,21 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.scantruth.ai.model.MedicalProfile
+import androidx.compose.ui.unit.sp
 import com.scantruth.ai.model.ReportRecord
 import com.scantruth.ai.ui.components.AppCard
 import com.scantruth.ai.ui.components.AppChip
 import com.scantruth.ai.ui.components.AppIcons
-import com.scantruth.ai.ui.components.EmptyStateCard
 import com.scantruth.ai.ui.components.ErrorPanel
 import com.scantruth.ai.ui.components.IconTile
 import com.scantruth.ai.ui.components.LoadingPanel
+import com.scantruth.ai.ui.components.PrivacyNoteCard
 import com.scantruth.ai.ui.components.SectionHeader
-import com.scantruth.ai.ui.components.SoftBanner
 import com.scantruth.ai.ui.components.documentDisplayName
 import com.scantruth.ai.ui.components.formatShortDate
 import com.scantruth.ai.ui.state.MyHealthUiState
@@ -70,9 +69,8 @@ import com.scantruth.ai.ui.state.ReportAnalysisState
 import com.scantruth.ai.ui.theme.Brand
 
 /**
- * My Health: the profile every analysis is compared with, plus the documents the user
- * has added. A report is only read after an explicit "Start report analysis" tap and
- * always passes through the privacy review before the cloud step.
+ * My Health screen matching the web application's visual styling, terminology,
+ * card hierarchy and user interaction flow.
  */
 @Composable
 fun MyHealthScreen(
@@ -93,16 +91,17 @@ fun MyHealthScreen(
     var pendingName by remember { mutableStateOf("") }
 
     var editingConditions by remember { mutableStateOf(false) }
-    var conditionDraft by remember { mutableStateOf<List<String>>(emptyList()) }
-    var conditionInput by remember { mutableStateOf("") }
-
     var editingCategories by remember { mutableStateOf(setOf<ProfileCategory>()) }
-    var editingExistingItem by remember { mutableStateOf<Pair<ProfileCategory, String>?>(null) }
-    var editingExistingDraft by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) {
         state.start(scope)
         state.load(scope)
+    }
+
+    DisposableEffect(state) {
+        onDispose {
+            state.clearSuccessMessage()
+        }
     }
 
     val documentLauncher = rememberLauncherForActivityResult(
@@ -116,26 +115,41 @@ fun MyHealthScreen(
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 28.dp),
+        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 28.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        // Screen header
         item {
-            Column {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
                     text = "My Health",
-                    style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onBackground
+                    style = MaterialTheme.typography.headlineMedium.copy(
+                        fontSize = 30.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = (-0.4).sp
+                    ),
+                    color = Brand.TextPrimary
                 )
                 Text(
                     text = "Personal health context for tailored scan verdicts and saved reports.",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 4.dp)
+                    color = Brand.TextSecondary
                 )
             }
         }
 
+        // Status banner when busy or after an action
+        val itemMessage = state.itemMessage
+        if (state.isValidatingItem || itemMessage != null) {
+            item {
+                ItemStatusBanner(
+                    busy = state.isValidatingItem,
+                    message = itemMessage ?: "Working…"
+                )
+            }
+        }
+
+        // Hero card: Build Your Health Context
         item {
             HealthContextBanner(
                 itemCount = if (state.isSignedIn) state.profile.itemCount else 0,
@@ -145,16 +159,6 @@ fun MyHealthScreen(
 
         if (!state.isSignedIn) {
             item { SignedOutCard() }
-        }
-
-        val itemMessage = state.itemMessage
-        if (state.isValidatingItem || itemMessage != null) {
-            item {
-                ItemStatusBanner(
-                    busy = state.isValidatingItem,
-                    message = itemMessage ?: "Working…"
-                )
-            }
         }
 
         if (state.isSignedIn && state.isLoading) {
@@ -173,12 +177,71 @@ fun MyHealthScreen(
         }
 
         if (state.isSignedIn) {
+            val conditions = state.profile.conditions
+
+            // Known Conditions section (matches Web Known Conditions)
             item {
-                SectionHeader(title = "AI Health Assistant")
+                SectionHeader(
+                    title = "Known Conditions",
+                    actionLabel = if (conditions.isNotEmpty()) (if (editingConditions) "Done" else "Edit") else null,
+                    onAction = { editingConditions = !editingConditions }
+                )
             }
 
             item {
-                AiHealthAssistantCard(
+                KnownConditionsCard(
+                    conditions = conditions,
+                    editing = editingConditions,
+                    isSaving = state.isSavingProfile,
+                    onAdd = {
+                        dialogCategory = ProfileCategory.CONDITIONS
+                        dialogDraft = ""
+                    },
+                    onRemove = { condition ->
+                        state.removeItem(scope, ProfileCategory.CONDITIONS, condition)
+                    }
+                )
+            }
+
+            // Health Context section: Allergies, Medications, Dietary restrictions
+            item {
+                SectionHeader(title = "Health Context")
+            }
+
+            val contextCategories = listOf(
+                ProfileCategory.ALLERGIES to AppIcons.AlertTriangle,
+                ProfileCategory.MEDICATIONS to AppIcons.Pill,
+                ProfileCategory.DIETARY_RESTRICTIONS to AppIcons.Leaf
+            )
+
+            contextCategories.forEach { (category, icon) ->
+                item(key = category.name) {
+                    val isEditing = editingCategories.contains(category)
+                    CategoryCard(
+                        category = category,
+                        icon = icon,
+                        items = state.itemsFor(category),
+                        isSaving = state.isSavingProfile,
+                        isEditing = isEditing,
+                        onToggleEdit = {
+                            editingCategories = if (isEditing) {
+                                editingCategories - category
+                            } else {
+                                editingCategories + category
+                            }
+                        },
+                        onAdd = {
+                            dialogCategory = category
+                            dialogDraft = ""
+                        },
+                        onRemove = { item -> state.removeItem(scope, category, item) }
+                    )
+                }
+            }
+
+            // Health notes card (matches Web Health notes assistant)
+            item {
+                HealthNotesCard(
                     input = state.aiAssistantInput,
                     isAnalyzing = state.isAiAssistantAnalyzing,
                     clarificationMessage = state.aiAssistantClarification,
@@ -190,127 +253,21 @@ fun MyHealthScreen(
                 )
             }
 
-            item {
-                SectionHeader(
-                    title = "Diseases",
-                    actionLabel = if (editingConditions) "Cancel" else "Edit",
-                    onAction = {
-                        if (editingConditions) {
-                            editingConditions = false
-                        } else {
-                            conditionDraft = state.profile.conditions
-                            conditionInput = ""
-                            editingConditions = true
-                        }
-                    }
-                )
-            }
-
-            item {
-                DiseasesCard(
-                    conditions = if (editingConditions) conditionDraft else state.profile.conditions,
-                    editing = editingConditions,
-                    input = conditionInput,
-                    isSaving = state.isSavingProfile,
-                    onInputChange = { conditionInput = it },
-                    onAdd = {
-                        val added = conditionInput.split(',', ';', '\n')
-                            .map { it.trim() }
-                            .filter { it.isNotEmpty() }
-                            .filterNot { new -> conditionDraft.any { it.equals(new, ignoreCase = true) } }
-                        state.validateItems(scope, ProfileCategory.CONDITIONS, added) { valid ->
-                            conditionDraft = (conditionDraft + valid).distinctBy { it.lowercase() }
-                            conditionInput = ""
-                        }
-                    },
-                    onEdit = { condition ->
-                        editingExistingItem = ProfileCategory.CONDITIONS to condition
-                        editingExistingDraft = condition
-                    },
-                    onRemove = { value ->
-                        conditionDraft = conditionDraft.filterNot {
-                            it.equals(value, ignoreCase = true)
-                        }
-                    },
-                    onStartEditing = {
-                        conditionDraft = state.profile.conditions
-                        conditionInput = ""
-                        editingConditions = true
-                    },
-                    onUpdate = {
-                        state.updateCategory(scope, ProfileCategory.CONDITIONS, conditionDraft)
-                        editingConditions = false
-                    }
-                )
-            }
-
-            item { SectionHeader(title = "Health Context") }
-
-            ProfileCategory.ACTIVE_CATEGORIES
-                .filter { it != ProfileCategory.CONDITIONS }
-                .forEach { category ->
-                    item(key = category.name) {
-                        CategoryCard(
-                            category = category,
-                            items = state.itemsFor(category),
-                            isSaving = state.isSavingProfile,
-                            isEditing = editingCategories.contains(category),
-                            onToggleEdit = {
-                                editingCategories = if (editingCategories.contains(category)) {
-                                    editingCategories - category
-                                } else {
-                                    editingCategories + category
-                                }
-                            },
-                            onAdd = {
-                                dialogCategory = category
-                                dialogDraft = ""
-                            },
-                            onEditItem = { item ->
-                                editingExistingItem = category to item
-                                editingExistingDraft = item
-                            },
-                            onRemove = { value -> state.removeItem(scope, category, value) }
-                        )
-                    }
-                }
-
+            // Medical Documents section
             item {
                 SectionHeader(
                     title = "Medical Documents",
-                    actionLabel = "History",
+                    actionLabel = if (state.reports.isNotEmpty()) "History" else null,
                     onAction = onOpenHistory
                 )
             }
 
-            item {
-                Button(
-                    onClick = {
-                        documentLauncher.launch(arrayOf("application/pdf", "image/*"))
-                    },
-                    enabled = !reportState.isBusy,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(52.dp),
-                    shape = RoundedCornerShape(16.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary,
-                        contentColor = MaterialTheme.colorScheme.onPrimary
-                    )
-                ) {
-                    Icon(
-                        imageVector = AppIcons.Plus,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Text(
-                        text = "Add a Medical Report",
-                        style = MaterialTheme.typography.labelLarge,
-                        modifier = Modifier.padding(start = 8.dp)
-                    )
-                }
+            // Uploaded documents list
+            items(count = state.reports.size, key = { index -> state.reports[index].id }) { index ->
+                ReportRow(record = state.reports[index])
             }
 
+            // Pending document card if selected
             val pickedUri = pendingUri
             if (pickedUri != null) {
                 item {
@@ -321,7 +278,7 @@ fun MyHealthScreen(
                             reportState.start(
                                 context = context,
                                 uri = pickedUri,
-                                displayName = pendingName.ifBlank { "Medical report" }
+                                displayName = pendingName
                             )
                             pendingUri = null
                             pendingName = ""
@@ -335,49 +292,61 @@ fun MyHealthScreen(
                 }
             }
 
-            if (reportState.isBusy) {
-                item { LoadingPanel(message = "Preparing your report on this device…") }
+            // Add Medical Report Card
+            item {
+                MedicalReportUploadCard(
+                    isBusy = reportState.isBusy,
+                    hasReports = state.reports.isNotEmpty(),
+                    onAddReport = {
+                        documentLauncher.launch(arrayOf("application/pdf", "image/*"))
+                    }
+                )
             }
+        }
 
-            if (state.reports.isEmpty()) {
-                item {
-                    EmptyStateCard(
-                        icon = AppIcons.Document,
-                        title = "No documents yet",
-                        body = "Add a lab result or discharge summary. Only a title, type and " +
-                            "marker count are kept after analysis."
-                    )
-                }
-            } else {
-                items(count = state.reports.size, key = { index -> state.reports[index].id }) { index ->
-                    ReportRow(record = state.reports[index])
-                }
-            }
-
-            item { LocalOnlyNotice() }
+        // Privacy note card matching web
+        item {
+            PrivacyNoteCard(
+                title = "Your privacy is protected",
+                body = "Gemini Nano checks and masks private details on your device before anything is sent to the cloud, and only after you approve the redacted text."
+            )
         }
     }
 
+    // Add manual item dialog
     val category = dialogCategory
     if (category != null) {
         AlertDialog(
             onDismissRequest = { dialogCategory = null },
-            title = { Text("Add to ${category.title.lowercase()}") },
+            title = {
+                Text(
+                    text = category.addTitle,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Brand.TextPrimary
+                )
+            },
             text = {
-                Column {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        text = "Add one item. It is stored in your own Firestore profile and " +
-                            "used only to compare scans.",
+                        text = "Add one item. It is stored in your own account profile and used to compare scans.",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = Brand.TextSecondary
                     )
                     OutlinedTextField(
                         value = dialogDraft,
                         onValueChange = { dialogDraft = it },
                         singleLine = true,
-                        label = { Text(category.singular.replaceFirstChar { it.uppercase() }) },
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier.padding(top = 12.dp)
+                        placeholder = { Text(category.placeholder, color = Brand.TextTertiary) },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Brand.Primary,
+                            unfocusedBorderColor = Brand.Divider,
+                            cursorColor = Brand.Primary
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 4.dp)
                     )
                 }
             },
@@ -389,73 +358,32 @@ fun MyHealthScreen(
                     },
                     enabled = dialogDraft.isNotBlank() && !state.isSavingProfile && !state.isValidatingItem
                 ) {
-                    Text("Add")
+                    Text(
+                        text = "Add",
+                        fontWeight = FontWeight.Bold,
+                        color = Brand.Primary
+                    )
                 }
             },
             dismissButton = {
-                TextButton(onClick = { dialogCategory = null }) { Text("Cancel") }
-            }
-        )
-    }
-
-    val existingItem = editingExistingItem
-    if (existingItem != null) {
-        val (cat, oldVal) = existingItem
-        AlertDialog(
-            onDismissRequest = { editingExistingItem = null },
-            title = { Text("Edit ${cat.singular}") },
-            text = {
-                OutlinedTextField(
-                    value = editingExistingDraft,
-                    onValueChange = { editingExistingDraft = it },
-                    singleLine = cat != ProfileCategory.HEALTH_NOTES,
-                    label = { Text("Value") },
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        val newDraft = editingExistingDraft.trim()
-                        if (newDraft.isNotEmpty() && !newDraft.equals(oldVal, ignoreCase = true)) {
-                            if (editingConditions && cat == ProfileCategory.CONDITIONS) {
-                                conditionDraft = conditionDraft.map {
-                                    if (it.equals(oldVal, ignoreCase = true)) newDraft else it
-                                }.distinctBy { it.lowercase() }
-                            } else {
-                                val current = state.itemsFor(cat)
-                                val updated = current.map {
-                                    if (it.equals(oldVal, ignoreCase = true)) newDraft else it
-                                }.distinctBy { it.lowercase() }
-                                state.updateCategory(scope, cat, updated)
-                            }
-                        }
-                        editingExistingItem = null
-                    },
-                    enabled = editingExistingDraft.isNotBlank() && !state.isSavingProfile
-                ) {
-                    Text("Update")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { editingExistingItem = null }) {
-                    Text("Cancel")
+                TextButton(onClick = { dialogCategory = null }) {
+                    Text("Cancel", color = Brand.TextSecondary)
                 }
             }
         )
     }
 }
 
+/** Status banner matching web .status-banner */
 @Composable
 private fun ItemStatusBanner(busy: Boolean, message: String) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
-        color = Brand.Soft
+        color = Brand.Soft.copy(alpha = 0.85f)
     ) {
         Row(
-            modifier = Modifier.padding(12.dp),
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             if (busy) {
@@ -464,24 +392,25 @@ private fun ItemStatusBanner(busy: Boolean, message: String) {
                         .padding(end = 10.dp)
                         .size(16.dp),
                     strokeWidth = 2.dp,
-                    color = MaterialTheme.colorScheme.primary
+                    color = Brand.Primary
                 )
             }
             Text(
                 text = message,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = Brand.TextSecondary
             )
         }
     }
 }
 
+/** Hero banner matching web .hero-card.column */
 @Composable
 private fun HealthContextBanner(itemCount: Int, signedIn: Boolean) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(26.dp))
+            .clip(RoundedCornerShape(24.dp))
             .background(
                 Brush.linearGradient(
                     colors = listOf(Brand.Deep, Brand.Primary),
@@ -490,66 +419,70 @@ private fun HealthContextBanner(itemCount: Int, signedIn: Boolean) {
                 )
             )
     ) {
-        Column(modifier = Modifier.padding(22.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
                 Box(
                     modifier = Modifier
-                        .size(42.dp)
-                        .clip(RoundedCornerShape(13.dp))
-                        .background(Color.White.copy(alpha = 0.16f)),
+                        .size(48.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(Color.White.copy(alpha = 0.14f)),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
-                        imageVector = AppIcons.HeartPulse,
+                        imageVector = AppIcons.HeartFile,
                         contentDescription = null,
                         tint = Color.White,
-                        modifier = Modifier.size(22.dp)
+                        modifier = Modifier.size(24.dp)
                     )
                 }
                 Text(
                     text = "Build Your Health Context",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = Color.White,
-                    modifier = Modifier
-                        .padding(start = 12.dp)
-                        .weight(1f)
+                    style = MaterialTheme.typography.titleLarge.copy(
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold
+                    ),
+                    color = Color.White
                 )
             }
 
             Text(
-                text = "The more your profile knows, the more personal every ingredient " +
-                    "verdict is. All data stays strictly in your own account.",
-                style = MaterialTheme.typography.bodySmall,
-                color = Brand.TextOnDeepMuted,
-                modifier = Modifier.padding(top = 10.dp)
+                text = "The more your profile knows, the more personal every ingredient verdict is. All data stays strictly in your own account.",
+                style = MaterialTheme.typography.bodySmall.copy(fontSize = 13.sp, lineHeight = 18.sp),
+                color = Color.White.copy(alpha = 0.85f)
             )
 
             Surface(
                 shape = RoundedCornerShape(100),
-                color = Color.White.copy(alpha = 0.14f),
-                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f)),
-                modifier = Modifier.padding(top = 14.dp)
+                color = Color.White.copy(alpha = 0.12f),
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.25f))
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Box(
                         modifier = Modifier
                             .size(6.dp)
-                            .background(Brand.Secondary, CircleShape)
+                            .background(Brand.MintBorder, CircleShape)
                     )
                     Text(
                         text = when {
                             !signedIn -> "Sign in to start"
                             itemCount == 0 -> "No details added yet"
-                            itemCount == 1 -> "1 detail active"
-                            else -> "$itemCount details active"
+                            itemCount == 1 -> "1 detail added"
+                            else -> "$itemCount details added"
                         },
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.SemiBold,
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        ),
                         color = Color.White
                     )
                 }
@@ -558,6 +491,7 @@ private fun HealthContextBanner(itemCount: Int, signedIn: Boolean) {
     }
 }
 
+/** Signed out notice card */
 @Composable
 private fun SignedOutCard() {
     AppCard {
@@ -571,13 +505,12 @@ private fun SignedOutCard() {
                     text = "Sign in to use My Health",
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface
+                    color = Brand.TextPrimary
                 )
                 Text(
-                    text = "Conditions, allergies, medications and reports live in your own " +
-                        "account. Sign in from the Profile tab, then come back here.",
+                    text = "Conditions, allergies, medications and reports live in your own account. Sign in from the Profile tab, then come back here.",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = Brand.TextSecondary,
                     modifier = Modifier.padding(top = 3.dp)
                 )
             }
@@ -585,58 +518,53 @@ private fun SignedOutCard() {
     }
 }
 
+/** Known Conditions card matching web Known Conditions section */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun DiseasesCard(
+private fun KnownConditionsCard(
     conditions: List<String>,
     editing: Boolean,
-    input: String,
     isSaving: Boolean,
-    onInputChange: (String) -> Unit,
     onAdd: () -> Unit,
-    onEdit: (String) -> Unit,
-    onRemove: (String) -> Unit,
-    onStartEditing: () -> Unit,
-    onUpdate: () -> Unit
+    onRemove: (String) -> Unit
 ) {
     AppCard {
-        Column(modifier = Modifier.padding(20.dp)) {
-            if (conditions.isEmpty() && !editing) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconTile(icon = AppIcons.HeartPulse, size = 40)
-                    Column(modifier = Modifier.padding(start = 12.dp).weight(1f)) {
-                        Text(
-                            text = "No diseases recorded",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = "Add actual illnesses such as Diabetes, Asthma, Tuberculosis or Hypertension.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 2.dp)
-                        )
-                    }
-                }
-                OutlinedButton(
-                    onClick = onStartEditing,
-                    modifier = Modifier.padding(top = 16.dp),
-                    shape = RoundedCornerShape(12.dp)
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.Top,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                IconTile(icon = AppIcons.Heart, size = 44)
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    Icon(
-                        imageVector = AppIcons.Plus,
-                        contentDescription = null,
-                        modifier = Modifier.size(15.dp)
+                    Text(
+                        text = if (conditions.isNotEmpty()) "Recorded conditions" else "No known conditions recorded",
+                        style = MaterialTheme.typography.titleSmall.copy(
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold
+                        ),
+                        color = Brand.TextPrimary
                     )
                     Text(
-                        text = "Add a disease",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.padding(start = 6.dp)
+                        text = if (conditions.isNotEmpty()) {
+                            "These personalize every scan analysis."
+                        } else {
+                            "Add conditions to make every scan analysis personalized and relevant."
+                        },
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            fontSize = 13.sp,
+                            color = Brand.TextSecondary
+                        )
                     )
                 }
-            } else {
+            }
+
+            if (conditions.isNotEmpty()) {
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -644,137 +572,91 @@ private fun DiseasesCard(
                     conditions.forEach { condition ->
                         AppChip(
                             text = condition,
-                            onEdit = if (editing && !isSaving) ({ onEdit(condition) }) else null,
-                            onRemove = if (editing && !isSaving) {
-                                ({ onRemove(condition) })
-                            } else {
-                                null
-                            }
+                            onRemove = if (editing && !isSaving) ({ onRemove(condition) }) else null
                         )
                     }
                 }
+            }
 
-                if (editing) {
-                    OutlinedTextField(
-                        value = input,
-                        onValueChange = onInputChange,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 16.dp),
-                        label = { Text("Add a disease") },
-                        placeholder = { Text("e.g. Type 2 diabetes, Hypertension, Asthma") },
-                        singleLine = true,
-                        shape = RoundedCornerShape(14.dp),
-                        textStyle = MaterialTheme.typography.bodyMedium
-                    )
-
-                    OutlinedButton(
-                        onClick = onAdd,
-                        enabled = input.isNotBlank() && !isSaving,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 10.dp)
-                            .height(44.dp),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Icon(
-                            imageVector = AppIcons.Plus,
-                            contentDescription = null,
-                            modifier = Modifier.size(15.dp)
-                        )
-                        Text(
-                            text = "Add to diseases",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.padding(start = 6.dp)
-                        )
-                    }
-
-                    Button(
-                        onClick = onUpdate,
-                        enabled = !isSaving,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 10.dp)
-                            .height(48.dp),
-                        shape = RoundedCornerShape(14.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.primary,
-                            contentColor = MaterialTheme.colorScheme.onPrimary
-                        ),
-                        elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp)
-                    ) {
-                        Text(
-                            text = if (isSaving) "Updating…" else "Update Diseases",
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                } else if (conditions.isNotEmpty()) {
-                    Text(
-                        text = "Used to compare every ingredient list and report you analyse.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 12.dp)
-                    )
-                }
+            OutlinedButton(
+                onClick = onAdd,
+                enabled = !isSaving,
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, Brand.Primary.copy(alpha = 0.25f)),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = Brand.Primary),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 11.dp)
+            ) {
+                Icon(
+                    imageVector = AppIcons.Plus,
+                    contentDescription = null,
+                    modifier = Modifier.size(15.dp)
+                )
+                Text(
+                    text = "Add a condition",
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold
+                    ),
+                    modifier = Modifier.padding(start = 6.dp)
+                )
             }
         }
     }
 }
 
+/** Health Context card for Allergies, Medications, and Dietary restrictions */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun CategoryCard(
     category: ProfileCategory,
+    icon: ImageVector,
     items: List<String>,
     isSaving: Boolean,
     isEditing: Boolean,
     onToggleEdit: () -> Unit,
     onAdd: () -> Unit,
-    onEditItem: (String) -> Unit,
     onRemove: (String) -> Unit
 ) {
     AppCard {
-        Column(modifier = Modifier.padding(20.dp)) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                IconTile(
-                    icon = when (category) {
-                        ProfileCategory.ALLERGIES -> AppIcons.AlertTriangle
-                        ProfileCategory.MEDICATIONS -> AppIcons.Pill
-                        else -> AppIcons.Leaf
-                    },
-                    size = 38
-                )
+                IconTile(icon = icon, size = 40)
                 Text(
                     text = category.title,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier
-                        .padding(start = 12.dp)
-                        .weight(1f)
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold
+                    ),
+                    color = Brand.TextPrimary,
+                    modifier = Modifier.weight(1f)
                 )
                 if (items.isNotEmpty()) {
                     TextButton(
                         onClick = onToggleEdit,
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp)
                     ) {
+                        Text(
+                            text = if (isEditing) "Done" else "Edit",
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold
+                            ),
+                            color = Brand.Primary
+                        )
                         Icon(
                             imageVector = if (isEditing) AppIcons.Check else AppIcons.Pencil,
                             contentDescription = null,
                             tint = Brand.Primary,
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Text(
-                            text = if (isEditing) "Done" else "Edit",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = Brand.Primary,
-                            modifier = Modifier.padding(start = 4.dp)
+                            modifier = Modifier
+                                .padding(start = 3.dp)
+                                .size(12.dp)
                         )
                     }
                 }
@@ -783,20 +665,19 @@ private fun CategoryCard(
             if (items.isEmpty()) {
                 Text(
                     text = "Nothing recorded yet. Add items so scans check for them.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 8.dp)
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontSize = 13.sp,
+                        color = Brand.TextSecondary
+                    )
                 )
             } else {
                 FlowRow(
-                    modifier = Modifier.padding(top = 14.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     items.forEach { item ->
                         AppChip(
                             text = item,
-                            onEdit = if (isEditing && !isSaving) ({ onEditItem(item) }) else null,
                             onRemove = if (isEditing && !isSaving) ({ onRemove(item) }) else null
                         )
                     }
@@ -806,19 +687,22 @@ private fun CategoryCard(
             OutlinedButton(
                 onClick = onAdd,
                 enabled = !isSaving,
-                modifier = Modifier.padding(top = 14.dp),
                 shape = RoundedCornerShape(12.dp),
-                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+                border = BorderStroke(1.dp, Brand.Primary.copy(alpha = 0.25f)),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = Brand.Primary),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 11.dp)
             ) {
                 Icon(
                     imageVector = AppIcons.Plus,
                     contentDescription = null,
-                    modifier = Modifier.size(14.dp)
+                    modifier = Modifier.size(15.dp)
                 )
                 Text(
-                    text = "Add ${category.singular}",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold,
+                    text = category.addTitle,
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold
+                    ),
                     modifier = Modifier.padding(start = 6.dp)
                 )
             }
@@ -826,6 +710,345 @@ private fun CategoryCard(
     }
 }
 
+/**
+ * Health notes card matching Web "Health notes" section and user requirement:
+ * Button label: "Add Notes"
+ * Placeholder: "Add a note"
+ * Heading: "Health notes"
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun HealthNotesCard(
+    input: String,
+    isAnalyzing: Boolean,
+    clarificationMessage: String?,
+    errorMessage: String?,
+    successMessage: String?,
+    onInputChange: (String) -> Unit,
+    onAnalyze: () -> Unit,
+    onClearInput: () -> Unit
+) {
+    AppCard {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = "Health notes",
+                style = MaterialTheme.typography.titleMedium.copy(
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold
+                ),
+                color = Brand.TextPrimary
+            )
+            Text(
+                text = "Anything else that should be considered, e.g. a recent diagnosis or a symptom that is not in the lists above.",
+                style = MaterialTheme.typography.bodySmall.copy(
+                    fontSize = 12.sp,
+                    color = Brand.TextSecondary,
+                    lineHeight = 16.sp
+                )
+            )
+
+            OutlinedTextField(
+                value = input,
+                onValueChange = onInputChange,
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = {
+                    Text(
+                        text = "Add a note",
+                        color = Brand.TextTertiary,
+                        fontSize = 14.sp
+                    )
+                },
+                minLines = 3,
+                maxLines = 5,
+                shape = RoundedCornerShape(12.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = Brand.Primary,
+                    unfocusedBorderColor = Brand.Divider,
+                    cursorColor = Brand.Primary,
+                    focusedTextColor = Brand.TextPrimary,
+                    unfocusedTextColor = Brand.TextPrimary
+                ),
+                trailingIcon = {
+                    if (input.isNotEmpty()) {
+                        IconButton(onClick = onClearInput) {
+                            Icon(
+                                imageVector = AppIcons.Close,
+                                contentDescription = "Clear input",
+                                tint = Brand.TextSecondary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                }
+            )
+
+            // Example suggestions to make typing notes effortless
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    text = "Tap to try an example:",
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Brand.TextSecondary
+                    )
+                )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    val examples = listOf(
+                        "I have diabetes",
+                        "Allergic to peanuts",
+                        "I take vitamin D",
+                        "Lactose intolerant",
+                        "Recovered from tuberculosis"
+                    )
+                    examples.forEach { example ->
+                        Surface(
+                            shape = RoundedCornerShape(100),
+                            color = Brand.Soft,
+                            onClick = {
+                                val nextText = if (input.isBlank()) {
+                                    example
+                                } else {
+                                    "$input. $example"
+                                }
+                                onInputChange(nextText)
+                            }
+                        ) {
+                            Text(
+                                text = example,
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium
+                                ),
+                                color = Brand.Primary,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Primary action button: Exact Web wording "Add Notes"
+            Button(
+                onClick = onAnalyze,
+                enabled = input.isNotBlank() && !isAnalyzing,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Brand.Primary,
+                    contentColor = Color.White
+                ),
+                elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp)
+            ) {
+                if (isAnalyzing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        color = Color.White,
+                        strokeWidth = 2.dp
+                    )
+                    Text(
+                        text = "Adding notes…",
+                        style = MaterialTheme.typography.labelLarge.copy(
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold
+                        ),
+                        modifier = Modifier.padding(start = 8.dp)
+                    )
+                } else {
+                    Icon(
+                        imageVector = AppIcons.Sparkle,
+                        contentDescription = null,
+                        modifier = Modifier.size(17.dp)
+                    )
+                    Text(
+                        text = "Add Notes",
+                        style = MaterialTheme.typography.labelLarge.copy(
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold
+                        ),
+                        modifier = Modifier.padding(start = 8.dp)
+                    )
+                }
+            }
+
+            // Fine print matching web
+            Row(
+                verticalAlignment = Alignment.Top,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.padding(top = 2.dp)
+            ) {
+                Icon(
+                    imageVector = AppIcons.Lock,
+                    contentDescription = null,
+                    tint = Brand.Primary,
+                    modifier = Modifier
+                        .padding(top = 2.dp)
+                        .size(12.dp)
+                )
+                Text(
+                    text = "Your note is masked on this device and shown to you for review before anything is sent to the cloud.",
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontSize = 11.sp,
+                        color = Brand.TextSecondary,
+                        lineHeight = 15.sp
+                    )
+                )
+            }
+
+            // Clarification banner if needed
+            if (clarificationMessage != null) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = Brand.WarningSoft,
+                    border = BorderStroke(1.dp, Brand.Warning.copy(alpha = 0.35f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.Top,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = AppIcons.AlertTriangle,
+                            contentDescription = null,
+                            tint = Brand.Warning,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            text = clarificationMessage,
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                color = Brand.Warning,
+                                fontWeight = FontWeight.Medium
+                            )
+                        )
+                    }
+                }
+            }
+
+            // Error banner if any
+            if (errorMessage != null) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = Brand.DangerSoft,
+                    border = BorderStroke(1.dp, Brand.Danger.copy(alpha = 0.3f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = AppIcons.AlertTriangle,
+                            contentDescription = null,
+                            tint = Brand.Danger,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            text = errorMessage,
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                color = Brand.OnDangerSoft
+                            )
+                        )
+                    }
+                }
+            }
+
+            // Success banner (auto-dismisses after 4.5 seconds)
+            if (successMessage != null) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = Brand.Soft,
+                    border = BorderStroke(1.dp, Brand.Secondary.copy(alpha = 0.4f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.Top,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = AppIcons.CheckCircle,
+                            contentDescription = null,
+                            tint = Brand.Primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            text = successMessage,
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                color = Brand.Primary,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Medical document upload card matching web */
+@Composable
+private fun MedicalReportUploadCard(
+    isBusy: Boolean,
+    hasReports: Boolean,
+    onAddReport: () -> Unit
+) {
+    AppCard {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            if (!hasReports) {
+                Text(
+                    text = "No medical reports uploaded.",
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontSize = 13.sp,
+                        color = Brand.TextSecondary
+                    )
+                )
+            }
+            OutlinedButton(
+                onClick = onAddReport,
+                enabled = !isBusy,
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, Brand.Primary.copy(alpha = 0.25f)),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = Brand.Primary),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 11.dp)
+            ) {
+                Icon(
+                    imageVector = AppIcons.FileUp,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp)
+                )
+                Text(
+                    text = "Add a medical report",
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold
+                    ),
+                    modifier = Modifier.padding(start = 6.dp)
+                )
+            }
+            Text(
+                text = "PDF or photo. Private details are masked on this device first.",
+                style = MaterialTheme.typography.bodySmall.copy(
+                    fontSize = 11.sp,
+                    color = Brand.TextSecondary
+                )
+            )
+        }
+    }
+}
+
+/** Pending Report Card waiting for explicit analysis */
 @Composable
 private fun PendingReportCard(
     fileName: String,
@@ -837,12 +1060,12 @@ private fun PendingReportCard(
         onClick = onStart,
         enabled = !isBusy,
         modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary),
+        shape = RoundedCornerShape(18.dp),
+        color = Brand.Card,
+        border = BorderStroke(1.5.dp, Brand.Primary),
         shadowElevation = 2.dp
     ) {
-        Column(modifier = Modifier.padding(20.dp)) {
+        Column(modifier = Modifier.padding(18.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconTile(icon = AppIcons.Document, size = 42, deep = true)
                 Column(modifier = Modifier.padding(start = 12.dp).weight(1f)) {
@@ -850,13 +1073,13 @@ private fun PendingReportCard(
                         text = "Ready to analyse · Tap to start",
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
+                        color = Brand.Primary
                     )
                     Text(
                         text = fileName.ifBlank { "Selected document" },
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurface,
+                        color = Brand.TextPrimary,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.padding(top = 2.dp)
@@ -865,12 +1088,10 @@ private fun PendingReportCard(
             }
 
             Text(
-                text = "Nothing has been read yet. Start the analysis to read the document " +
-                    "on this device, mask identifiers and review the text before anything " +
-                    "is sent.",
+                text = "Nothing has been read yet. Start the analysis to read the document on this device, mask identifiers and review the text before anything is sent.",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 12.dp)
+                color = Brand.TextSecondary,
+                modifier = Modifier.padding(top = 10.dp)
             )
 
             Button(
@@ -878,12 +1099,12 @@ private fun PendingReportCard(
                 enabled = !isBusy,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 16.dp)
-                    .height(50.dp),
-                shape = RoundedCornerShape(16.dp),
+                    .padding(top = 14.dp)
+                    .height(48.dp),
+                shape = RoundedCornerShape(14.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary
+                    containerColor = Brand.Primary,
+                    contentColor = Color.White
                 ),
                 elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp)
             ) {
@@ -903,37 +1124,42 @@ private fun PendingReportCard(
             TextButton(
                 onClick = onRemove,
                 enabled = !isBusy,
-                modifier = Modifier.fillMaxWidth().padding(top = 2.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 2.dp)
             ) {
                 Text(
                     text = "Remove file",
                     style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = Brand.TextSecondary
                 )
             }
         }
     }
 }
 
+/** Report Row matching web */
 @Composable
 private fun ReportRow(record: ReportRecord) {
     AppCard {
         Row(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconTile(icon = AppIcons.Document, size = 42)
+            IconTile(icon = AppIcons.Document, size = 40)
 
             Column(
                 modifier = Modifier
-                    .padding(start = 14.dp)
+                    .padding(start = 12.dp)
                     .weight(1f)
             ) {
                 Text(
                     text = record.reportTitle,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurface,
+                    style = MaterialTheme.typography.titleSmall.copy(
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold
+                    ),
+                    color = Brand.TextPrimary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -944,278 +1170,27 @@ private fun ReportRow(record: ReportRecord) {
                         "${record.identifiersMasked} masked",
                         formatShortDate(record.savedAtMillis).takeIf { it.isNotBlank() }
                     ).joinToString(" · "),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 3.dp)
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontSize = 12.sp,
+                        color = Brand.TextSecondary
+                    ),
+                    modifier = Modifier.padding(top = 2.dp)
                 )
             }
 
             Surface(
-                shape = RoundedCornerShape(50),
-                color = Brand.Soft,
-                border = BorderStroke(1.dp, Brand.Secondary.copy(alpha = 0.3f))
+                shape = RoundedCornerShape(100),
+                color = Brand.Soft
             ) {
                 Text(
                     text = "Saved",
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold
+                    ),
                     color = Brand.Primary,
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
                 )
-            }
-        }
-    }
-}
-
-@Composable
-private fun LocalOnlyNotice() {
-    Column {
-        SoftBanner(
-            icon = AppIcons.ShieldCheck,
-            title = "What is stored, and where",
-            body = "Only your profile lists and report metadata (title, type, marker count) " +
-                "are saved to your account. Original documents and redacted text are never " +
-                "stored in Firestore."
-        )
-        Text(
-            text = "You review the masked text before any cloud request, and high-risk " +
-                "identifiers keep the approve button locked.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Start,
-            modifier = Modifier.padding(top = 10.dp, start = 4.dp, end = 4.dp)
-        )
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun AiHealthAssistantCard(
-    input: String,
-    isAnalyzing: Boolean,
-    clarificationMessage: String?,
-    errorMessage: String?,
-    successMessage: String?,
-    onInputChange: (String) -> Unit,
-    onAnalyze: () -> Unit,
-    onClearInput: () -> Unit
-) {
-    AppCard {
-        Column(modifier = Modifier.padding(20.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconTile(icon = AppIcons.Sparkle, size = 40, deep = true)
-                Column(modifier = Modifier.padding(start = 12.dp).weight(1f)) {
-                    Text(
-                        text = "AI Health Context Assistant",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Text(
-                        text = "Describe your diseases, allergies, medications, or dietary restrictions in plain words.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 2.dp)
-                    )
-                }
-            }
-
-            OutlinedTextField(
-                value = input,
-                onValueChange = onInputChange,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 16.dp),
-                label = { Text("Describe your health") },
-                placeholder = { Text("e.g. I have diabetes, allergic to peanuts, and take vitamin D") },
-                minLines = 2,
-                maxLines = 4,
-                shape = RoundedCornerShape(14.dp),
-                textStyle = MaterialTheme.typography.bodyMedium,
-                trailingIcon = {
-                    if (input.isNotEmpty()) {
-                        IconButton(onClick = onClearInput) {
-                            Icon(
-                                imageVector = AppIcons.Close,
-                                contentDescription = "Clear input",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(16.dp)
-                            )
-                        }
-                    }
-                }
-            )
-
-            Text(
-                text = "Tap to try an example:",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 10.dp, bottom = 6.dp)
-            )
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                val examples = listOf(
-                    "I have diabetes",
-                    "Allergic to peanuts",
-                    "I take vitamin D",
-                    "Lactose intolerant",
-                    "Recovered from tuberculosis"
-                )
-                examples.forEach { example ->
-                    Surface(
-                        shape = RoundedCornerShape(50),
-                        color = Brand.SoftRaised,
-                        border = BorderStroke(1.dp, Brand.Outline.copy(alpha = 0.6f)),
-                        onClick = {
-                            val nextText = if (input.isBlank()) {
-                                example
-                            } else {
-                                "$input. $example"
-                            }
-                            onInputChange(nextText)
-                        }
-                    ) {
-                        Text(
-                            text = example,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Brand.Primary,
-                            fontWeight = FontWeight.Medium,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                        )
-                    }
-                }
-            }
-
-            Button(
-                onClick = onAnalyze,
-                enabled = input.isNotBlank() && !isAnalyzing,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 14.dp)
-                    .height(48.dp),
-                shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary
-                ),
-                elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp)
-            ) {
-                if (isAnalyzing) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(18.dp),
-                        color = MaterialTheme.colorScheme.onPrimary,
-                        strokeWidth = 2.dp
-                    )
-                    Text(
-                        text = "Organizing with AI…",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(start = 8.dp)
-                    )
-                } else {
-                    Icon(
-                        imageVector = AppIcons.Sparkle,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Text(
-                        text = "Organize with AI",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(start = 8.dp)
-                    )
-                }
-            }
-
-            if (clarificationMessage != null) {
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = Brand.WarningSoft,
-                    border = BorderStroke(1.dp, Brand.Warning.copy(alpha = 0.35f)),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 12.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(12.dp),
-                        verticalAlignment = Alignment.Top
-                    ) {
-                        Icon(
-                            imageVector = AppIcons.AlertTriangle,
-                            contentDescription = null,
-                            tint = Brand.Warning,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Text(
-                            text = clarificationMessage,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Brand.Warning,
-                            fontWeight = FontWeight.Medium,
-                            modifier = Modifier.padding(start = 8.dp)
-                        )
-                    }
-                }
-            }
-
-            if (errorMessage != null) {
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = Brand.DangerSoft,
-                    border = BorderStroke(1.dp, Brand.Danger.copy(alpha = 0.3f)),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 12.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = AppIcons.AlertTriangle,
-                            contentDescription = null,
-                            tint = Brand.Danger,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Text(
-                            text = errorMessage,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Brand.OnDangerSoft,
-                            modifier = Modifier.padding(start = 8.dp)
-                        )
-                    }
-                }
-            }
-
-            if (successMessage != null) {
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = Brand.Soft,
-                    border = BorderStroke(1.dp, Brand.Secondary.copy(alpha = 0.4f)),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 12.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(12.dp),
-                        verticalAlignment = Alignment.Top
-                    ) {
-                        Icon(
-                            imageVector = AppIcons.Check,
-                            contentDescription = null,
-                            tint = Brand.Primary,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Text(
-                            text = successMessage,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Brand.Primary,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.padding(start = 8.dp)
-                        )
-                    }
-                }
             }
         }
     }

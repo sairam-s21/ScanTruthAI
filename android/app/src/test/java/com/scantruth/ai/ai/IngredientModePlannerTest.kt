@@ -14,45 +14,29 @@ import org.junit.Test
 class IngredientModePlannerTest {
 
     @Test
-    fun `flash uses the cloud only`() {
+    fun `auto uses Gemini Flash cloud directly without fallback notice`() {
         assertEquals(
             listOf(InferenceAttempt.CLOUD),
-            IngredientModePlanner.plan(AiMode.FLASH, nanoReady = true)
+            IngredientModePlanner.plan(AiMode.AUTO)
         )
-        assertEquals(
-            listOf(InferenceAttempt.CLOUD),
-            IngredientModePlanner.plan(AiMode.FLASH, nanoReady = false)
-        )
+        assertFalse(IngredientModePlanner.cloudCountsAsFallback(AiMode.AUTO))
     }
 
     @Test
-    fun `nano never plans a cloud attempt`() {
-        assertEquals(
-            listOf(InferenceAttempt.ON_DEVICE),
-            IngredientModePlanner.plan(AiMode.NANO, nanoReady = true)
-        )
-        val unavailable = IngredientModePlanner.plan(AiMode.NANO, nanoReady = false)
-        assertEquals(listOf(InferenceAttempt.ON_DEVICE), unavailable)
-        assertFalse("NANO must never fall back to the cloud", unavailable.contains(InferenceAttempt.CLOUD))
-    }
-
-    @Test
-    fun `auto prefers nano and falls back to the cloud`() {
-        assertEquals(
-            listOf(InferenceAttempt.ON_DEVICE, InferenceAttempt.CLOUD),
-            IngredientModePlanner.plan(AiMode.AUTO, nanoReady = true)
-        )
-        assertEquals(
-            listOf(InferenceAttempt.CLOUD),
-            IngredientModePlanner.plan(AiMode.AUTO, nanoReady = false)
-        )
-    }
-
-    @Test
-    fun `only auto counts a cloud run as a fallback`() {
-        assertTrue(IngredientModePlanner.cloudCountsAsFallback(AiMode.AUTO))
-        assertFalse(IngredientModePlanner.cloudCountsAsFallback(AiMode.FLASH))
+    fun `nano plans only Gemini Nano and never falls back to cloud`() {
+        val plan = IngredientModePlanner.plan(AiMode.NANO)
+        assertEquals(listOf(InferenceAttempt.NANO), plan)
+        assertFalse("NANO must never fall back to the cloud", plan.contains(InferenceAttempt.CLOUD))
         assertFalse(IngredientModePlanner.cloudCountsAsFallback(AiMode.NANO))
+    }
+
+    @Test
+    fun `on-device plans independent offline analyzer without Nano or cloud`() {
+        val plan = IngredientModePlanner.plan(AiMode.ON_DEVICE)
+        assertEquals(listOf(InferenceAttempt.OFFLINE), plan)
+        assertFalse(plan.contains(InferenceAttempt.CLOUD))
+        assertFalse(plan.contains(InferenceAttempt.NANO))
+        assertFalse(IngredientModePlanner.cloudCountsAsFallback(AiMode.ON_DEVICE))
     }
 
     @Test

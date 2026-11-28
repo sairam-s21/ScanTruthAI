@@ -355,4 +355,129 @@ object AppIcons {
             lineTo(19.5f, 14f)
         }
     }
+
+    val Heart: ImageVector by lazy {
+        strokeIcon("Heart", 1.8f) {
+            moveTo(12f, 20f)
+            quadTo(3.5f, 14.5f, 3.5f, 9.5f)
+            arcTo(4.5f, 4.5f, 0f, false, true, 12f, 7f)
+            arcTo(4.5f, 4.5f, 0f, false, true, 20.5f, 9.5f)
+            quadTo(20.5f, 14.5f, 12f, 20f)
+            close()
+        }
+    }
+
+    val HeartFile: ImageVector by lazy {
+        strokeIcon("HeartFile", 1.8f) {
+            moveTo(6.5f, 3.5f)
+            lineTo(17.5f, 3.5f)
+            quadTo(20.5f, 3.5f, 20.5f, 6.5f)
+            lineTo(20.5f, 17.5f)
+            quadTo(20.5f, 20.5f, 17.5f, 20.5f)
+            lineTo(6.5f, 20.5f)
+            quadTo(3.5f, 20.5f, 3.5f, 17.5f)
+            lineTo(3.5f, 6.5f)
+            quadTo(3.5f, 3.5f, 6.5f, 3.5f)
+            close()
+            moveTo(12f, 16.5f)
+            quadTo(7.5f, 13.9f, 7.5f, 10.9f)
+            arcTo(2.3f, 2.3f, 0f, false, true, 12f, 9.6f)
+            arcTo(2.3f, 2.3f, 0f, false, true, 16.5f, 10.9f)
+            quadTo(16.5f, 13.9f, 12f, 16.5f)
+            close()
+        }
+    }
+
+    val FileUp: ImageVector by lazy {
+        strokeIcon("FileUp", 1.8f) {
+            moveTo(6f, 3f)
+            lineTo(15f, 3f)
+            lineTo(18f, 6f)
+            lineTo(18f, 21f)
+            lineTo(6f, 21f)
+            close()
+            moveTo(14f, 3f)
+            lineTo(14f, 7f)
+            lineTo(18f, 7f)
+            moveTo(12f, 17f)
+            lineTo(12f, 11f)
+            moveTo(9.5f, 13.5f)
+            lineTo(12f, 11f)
+            lineTo(14.5f, 13.5f)
+        }
+    }
+
+    val CheckCircle: ImageVector by lazy {
+        strokeIcon("CheckCircle", 1.8f) {
+            moveTo(12f, 3f)
+            arcTo(9f, 9f, 0f, true, true, 12f, 21f)
+            arcTo(9f, 9f, 0f, true, true, 12f, 3f)
+            moveTo(8f, 12f)
+            lineTo(11f, 15f)
+            lineTo(16f, 9f)
+        }
+    }
+
+    val XCircle: ImageVector by lazy {
+        strokeIcon("XCircle", 1.8f) {
+            moveTo(12f, 3f)
+            arcTo(9f, 9f, 0f, true, true, 12f, 21f)
+            arcTo(9f, 9f, 0f, true, true, 12f, 3f)
+            moveTo(9f, 9f)
+            lineTo(15f, 15f)
+            moveTo(15f, 9f)
+            lineTo(9f, 15f)
+        }
+    }
+
+    val InfoCircle: ImageVector by lazy {
+        strokeIcon("InfoCircle", 1.8f) {
+            moveTo(12f, 3f)
+            arcTo(9f, 9f, 0f, true, true, 12f, 21f)
+            arcTo(9f, 9f, 0f, true, true, 12f, 3f)
+            moveTo(12f, 11f)
+            lineTo(12f, 16f)
+            moveTo(12f, 8f)
+            lineTo(12f, 8.2f)
+        }
+    }
+
+    val User: ImageVector by lazy {
+        strokeIcon("User", 1.8f) {
+            moveTo(12f, 4f)
+            arcTo(4f, 4f, 0f, true, true, 12f, 12f)
+            arcTo(4f, 4f, 0f, true, true, 12f, 4f)
+            moveTo(5f, 20f)
+            quadTo(5f, 13f, 12f, 13f)
+            quadTo(19f, 13f, 19f, 20f)
+        }
+    }
+
+    val Logout: ImageVector by lazy {
+        strokeIcon("Logout", 1.8f) {
+            moveTo(14f, 4f)
+            lineTo(6f, 4f)
+            lineTo(6f, 20f)
+            lineTo(14f, 20f)
+            moveTo(10f, 12f)
+            lineTo(20f, 12f)
+            moveTo(16.5f, 8.5f)
+            lineTo(20f, 12f)
+            lineTo(16.5f, 15.5f)
+        }
+    }
+
+    val Key: ImageVector by lazy {
+        strokeIcon("Key", 1.8f) {
+            moveTo(8f, 10f)
+            arcTo(4f, 4f, 0f, true, true, 8f, 18f)
+            arcTo(4f, 4f, 0f, true, true, 8f, 10f)
+            moveTo(11f, 11f)
+            lineTo(19f, 3f)
+            moveTo(16f, 6f)
+            lineTo(18f, 8f)
+            moveTo(14f, 8f)
+            lineTo(16f, 10f)
+        }
+    }
 }

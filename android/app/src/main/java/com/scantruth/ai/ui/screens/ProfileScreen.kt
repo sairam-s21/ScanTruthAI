@@ -482,33 +482,44 @@ private fun SignedOutCard(
     isSigningIn: Boolean,
     onGoogleSignIn: () -> Unit
 ) {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(26.dp))
-            .background(
-                Brush.linearGradient(
-                    colors = listOf(Brand.Deep, Brand.Primary),
-                    start = androidx.compose.ui.geometry.Offset.Zero,
-                    end = androidx.compose.ui.geometry.Offset(900f, 700f)
-                )
-            )
-    ) {
-        Column(modifier = Modifier.padding(22.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                AvatarPlaceholder(size = 64)
-                Column(modifier = Modifier.padding(start = 14.dp).weight(1f)) {
+    AppCard {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(64.dp)
+                        .background(Brand.Primary, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = AppIcons.User,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
                     Text(
-                        text = "You are browsing as a guest",
+                        text = if (isSigningIn) "Checking sign-in status…" else "You are not signed in",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
-                        color = Color.White
+                        color = Brand.TextPrimary
                     )
                     Text(
-                        text = "Sign in to keep your health context and scan history attached to your own account.",
+                        text = "Sign in to save your health profile and scan history to your account, and see them on every device.",
                         style = MaterialTheme.typography.bodySmall,
-                        color = Brand.TextOnDeepMuted,
-                        modifier = Modifier.padding(top = 4.dp)
+                        color = Brand.TextSecondary,
+                        lineHeight = 18.sp
                     )
                 }
             }
@@ -518,44 +529,43 @@ private fun SignedOutCard(
                 enabled = !isSigningIn,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 20.dp)
-                    .height(52.dp),
-                shape = RoundedCornerShape(16.dp),
+                    .height(50.dp),
+                shape = RoundedCornerShape(14.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = Color.White,
-                    contentColor = Brand.Deep
+                    containerColor = Brand.Primary,
+                    contentColor = Color.White,
+                    disabledContainerColor = Brand.Primary.copy(alpha = 0.45f),
+                    disabledContentColor = Color.White.copy(alpha = 0.7f)
                 ),
-                elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp)
+                elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp)
             ) {
                 if (isSigningIn) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(18.dp),
                         strokeWidth = 2.dp,
-                        color = Brand.Primary
+                        color = Color.White
                     )
                     Text(
-                        text = "Signing you in…",
-                        style = MaterialTheme.typography.labelLarge,
+                        text = "Signing in...",
+                        style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(start = 10.dp)
+                        modifier = Modifier.padding(start = 8.dp)
                     )
                 } else {
-                    GoogleGlyph()
+                    Icon(
+                        imageVector = AppIcons.Key,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(18.dp)
+                    )
                     Text(
-                        text = "Continue with Google",
-                        style = MaterialTheme.typography.labelLarge,
+                        text = "Sign in with Google",
+                        style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(start = 10.dp)
+                        modifier = Modifier.padding(start = 8.dp)
                     )
                 }
             }
-
-            Text(
-                text = "You stay signed out until you pick an account.",
-                style = MaterialTheme.typography.bodySmall,
-                color = Brand.TextOnDeepMuted,
-                modifier = Modifier.padding(top = 10.dp)
-            )
         }
     }
 }
@@ -567,8 +577,11 @@ private fun SignedInCard(
     onSignOut: () -> Unit
 ) {
     AppCard {
-        Column(modifier = Modifier.padding(20.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(modifier = Modifier.padding(18.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 ProfileAvatar(
                     photoUrl = session.photoUrl,
                     displayName = session.displayName,
@@ -579,10 +592,10 @@ private fun SignedInCard(
                 Column(modifier = Modifier.padding(start = 14.dp).weight(1f)) {
                     Text(
                         text = session.displayName?.takeIf { it.isNotBlank() }
-                            ?: "Google account",
-                        style = MaterialTheme.typography.titleLarge,
+                            ?: "Signed in",
+                        style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface,
+                        color = Brand.TextPrimary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -590,7 +603,7 @@ private fun SignedInCard(
                         Text(
                             text = email,
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = Brand.TextSecondary,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.padding(top = 2.dp)
@@ -600,16 +613,25 @@ private fun SignedInCard(
                     Surface(
                         shape = RoundedCornerShape(50),
                         color = Brand.Soft,
-                        border = BorderStroke(1.dp, Brand.Secondary.copy(alpha = 0.3f)),
-                        modifier = Modifier.padding(top = 8.dp)
+                        modifier = Modifier.padding(top = 6.dp)
                     ) {
-                        Text(
-                            text = "Signed in with Google",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = Brand.Primary,
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                        )
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .background(Brand.Primary, CircleShape)
+                            )
+                            Text(
+                                text = "Signed in with Google",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Brand.Primary
+                            )
+                        }
                     }
                 }
             }
@@ -620,7 +642,7 @@ private fun SignedInCard(
                 modifier = Modifier.padding(vertical = 16.dp)
             )
 
-            // Account ID, member-since date and sign-in method live behind "About", as on iOS.
+            // Account ID, member-since date and sign-in method live behind "About", as on iOS and web.
             var aboutExpanded by remember { mutableStateOf(false) }
             val aboutRotation by animateFloatAsState(
                 targetValue = if (aboutExpanded) 180f else 0f,
@@ -635,7 +657,7 @@ private fun SignedInCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
-                    imageVector = Icons.Outlined.Info,
+                    imageVector = AppIcons.InfoCircle,
                     contentDescription = null,
                     tint = Brand.Primary,
                     modifier = Modifier.size(16.dp)
@@ -672,24 +694,24 @@ private fun SignedInCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = 16.dp)
-                    .height(48.dp),
+                    .height(50.dp),
                 shape = RoundedCornerShape(14.dp),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.5f)),
+                border = BorderStroke(1.dp, Brand.Danger.copy(alpha = 0.25f)),
                 colors = ButtonDefaults.outlinedButtonColors(
-                    contentColor = MaterialTheme.colorScheme.error
+                    contentColor = Brand.Danger
                 )
             ) {
                 if (isSigningOut) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(16.dp),
                         strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.error
+                        color = Brand.Danger
                     )
                 } else {
                     Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ExitToApp,
+                        imageVector = AppIcons.Logout,
                         contentDescription = null,
-                        modifier = Modifier.size(18.dp)
+                        modifier = Modifier.size(16.dp)
                     )
                 }
                 Text(
@@ -790,53 +812,40 @@ private fun SectionGroup(
     content: @Composable () -> Unit
 ) {
     val chevronRotation by animateFloatAsState(
-        targetValue = if (expanded) 90f else 0f,
+        targetValue = if (expanded) 180f else 0f,
         label = "chevron"
     )
-    val container by animateColorAsState(
-        targetValue = if (expanded) {
-            MaterialTheme.colorScheme.surfaceContainerHighest
-        } else {
-            MaterialTheme.colorScheme.surface
-        },
-        label = "sectionContainer"
-    )
 
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.large,
-        color = container,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-    ) {
+    AppCard {
         Column {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable(onClick = onToggle)
-                    .padding(horizontal = 18.dp, vertical = 16.dp),
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 IconTile(icon = icon, size = 40, tint = iconTint)
-                Column(modifier = Modifier.padding(start = 14.dp).weight(1f)) {
+                Column(modifier = Modifier.padding(start = 12.dp).weight(1f)) {
                     Text(
                         text = title,
-                        style = MaterialTheme.typography.titleMedium,
+                        style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = Brand.TextPrimary
                     )
                     Text(
                         text = subtitle,
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 2.dp)
+                        color = Brand.TextSecondary,
+                        modifier = Modifier.padding(top = 1.dp)
                     )
                 }
                 Icon(
-                    imageVector = AppIcons.ChevronRight,
+                    imageVector = AppIcons.ChevronDown,
                     contentDescription = if (expanded) "Collapse $title" else "Expand $title",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    tint = Brand.TextTertiary,
                     modifier = Modifier
-                        .size(18.dp)
+                        .size(16.dp)
                         .rotate(chevronRotation)
                 )
             }
@@ -850,7 +859,7 @@ private fun SectionGroup(
                     HorizontalDivider(
                         thickness = 1.dp,
                         color = MaterialTheme.colorScheme.outlineVariant,
-                        modifier = Modifier.padding(bottom = 12.dp)
+                        modifier = Modifier.padding(bottom = 14.dp)
                     )
                     content()
                 }

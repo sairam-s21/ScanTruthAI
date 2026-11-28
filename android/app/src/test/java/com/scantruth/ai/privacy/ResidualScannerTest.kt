@@ -97,4 +97,46 @@ class ResidualScannerTest {
         assertFalse(rendered.contains("a@b.com"))
         assertTrue(findings.all { it.lineNumber != null })
     }
+
+    @Test
+    fun `labelled report and sample codes are masked and leave no identifier-shaped residual`() {
+        val report = """
+            Report No: RPT-49201
+            Sample No: SM-10420
+            Order ID: ORD-88210
+            Hemoglobin 13.4 g/dL
+        """.trimIndent()
+
+        val outcome = PrivacyMasker.mask(report) as MaskOutcome.Masked
+        assertTrue(outcome.document.isSafeToApprove)
+        assertFalse(outcome.document.redactedText.contains("RPT-49201"))
+        assertFalse(outcome.document.redactedText.contains("SM-10420"))
+        assertFalse(outcome.document.redactedText.contains("ORD-88210"))
+        assertTrue(
+            outcome.document.alerts.none { it.title.contains("Identifier-shaped code", ignoreCase = true) }
+        )
+    }
+
+    @Test
+    fun `month year headers ISO accreditation and clinical units do not false positive as identifier codes`() {
+        val report = """
+            Printed NOV 2025
+            Accredited ISO 15189
+            Serum IgE 1250 IU/ml
+            Ferritin 45.2 ng/ml
+            Analyzed on COBAS XN 1000 analyzer
+        """.trimIndent()
+
+        val findings = ResidualScanner.scan(report)
+        assertTrue(
+            "Harmless clinical/date/standard tokens must not trigger Identifier-shaped code: $findings",
+            findings.none { it.title.contains("Identifier-shaped code", ignoreCase = true) }
+        )
+    }
+
+    @Test
+    fun `unlabelled letter-and-digit code on a non-clinical line is still flagged`() {
+        val findings = ResidualScanner.scan("Visit code XY-98412 confirmed")
+        assertTrue(findings.any { it.title.contains("Identifier-shaped code", ignoreCase = true) })
+    }
 }

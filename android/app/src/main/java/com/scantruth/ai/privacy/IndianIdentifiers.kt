@@ -75,7 +75,7 @@ internal object IndianIdentifiers {
         Rule(
             IdentifierCategory.HOSPITAL_ID,
             Regex(
-                """(?i)\b(?:lab\s*ref|ref(?:erence)?\s*(?:no\.?|number))\b\s*[:#\-]?\s*([A-Za-z0-9][A-Za-z0-9/\-]{2,})"""
+                """(?i)\b(?:lab\s*ref(?:\s*(?:no\.?|id))?|ref(?:erence)?\s*(?:no\.?|number|id)|(?:mci|nmc|kmc|mmc|dmc)\s*(?:reg\.?\s*(?:no\.?|id)?))\b\s*[:#\-]?\s*([A-Za-z0-9][A-Za-z0-9/\-]{2,})"""
             )
         ),
         // Addresses in the label forms Indian reports use.

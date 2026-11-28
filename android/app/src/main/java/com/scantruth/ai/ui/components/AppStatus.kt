@@ -23,10 +23,13 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.scantruth.ai.ui.theme.Brand
@@ -184,7 +187,7 @@ fun ErrorPanel(
     }
 }
 
-/** Small labelled chip used for identifiers, conditions and profile items. */
+/** Small labelled chip matching web .chip (mint bg, capsule shape). */
 @Composable
 fun AppChip(
     text: String,
@@ -194,29 +197,36 @@ fun AppChip(
     selected: Boolean = false,
     onClick: (() -> Unit)? = null
 ) {
-    val containerColor = if (selected) {
-        MaterialTheme.colorScheme.primary
-    } else {
-        MaterialTheme.colorScheme.primaryContainer
+    val isEditing = onRemove != null || onEdit != null
+    val containerColor = when {
+        selected -> Brand.Primary
+        isEditing -> Brand.Avoid.copy(alpha = 0.08f)
+        else -> Brand.Soft
     }
-    val contentColor = if (selected) {
-        MaterialTheme.colorScheme.onPrimary
-    } else {
-        MaterialTheme.colorScheme.onPrimaryContainer
+    val contentColor = when {
+        selected -> Color.White
+        else -> Brand.TextPrimary
     }
 
     val chipContent: @Composable () -> Unit = {
         Row(
             modifier = Modifier.padding(
                 start = 12.dp,
-                end = if (onRemove != null || onEdit != null) 6.dp else 12.dp,
-                top = 7.dp,
-                bottom = 7.dp
+                end = if (onRemove != null || onEdit != null) 8.dp else 12.dp,
+                top = 8.dp,
+                bottom = 8.dp
             ),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Text(text = text, style = MaterialTheme.typography.labelMedium)
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium
+                ),
+                color = contentColor
+            )
             if (onEdit != null) {
                 Surface(
                     shape = CircleShape,
@@ -238,18 +248,15 @@ fun AppChip(
             if (onRemove != null) {
                 Surface(
                     shape = CircleShape,
-                    color = Brand.DangerSoft,
-                    border = BorderStroke(0.8.dp, Brand.Danger.copy(alpha = 0.35f)),
+                    color = Color.Transparent,
                     onClick = onRemove,
                     modifier = Modifier.padding(start = 2.dp)
                 ) {
                     Icon(
-                        imageVector = AppIcons.Close,
+                        imageVector = AppIcons.XCircle,
                         contentDescription = "Remove $text",
-                        tint = Brand.Danger,
-                        modifier = Modifier
-                            .padding(4.dp)
-                            .size(11.dp)
+                        tint = Brand.Avoid.copy(alpha = 0.85f),
+                        modifier = Modifier.size(16.dp)
                     )
                 }
             }

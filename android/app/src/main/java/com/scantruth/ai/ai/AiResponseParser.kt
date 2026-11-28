@@ -76,7 +76,9 @@ internal data class HealthFactorDto(
 internal data class BreakdownDto(
     val name: String = "",
     val verdict: String? = null,
-    val note: String? = null
+    val status: String? = null,
+    val note: String? = null,
+    val conflict: String? = null
 )
 
 @Serializable
@@ -235,10 +237,14 @@ object AiResponseParser {
         val breakdown = IngredientParser.sanitiseBreakdown(
             dto.ingredientBreakdown.mapNotNull { item ->
                 val name = item.name.clean() ?: return@mapNotNull null
+                val rawVerdict = item.verdict ?: item.status
                 IngredientVerdict(
                     name = name,
-                    verdict = IngredientParser.normaliseVerdict(item.verdict),
-                    note = item.note.clean()
+                    verdict = IngredientParser.normaliseVerdict(rawVerdict),
+                    note = item.note.clean(),
+                    conflict = item.conflict.clean()?.takeUnless {
+                        it.equals("none", ignoreCase = true) || it.equals("n/a", ignoreCase = true)
+                    }
                 )
             }
         )

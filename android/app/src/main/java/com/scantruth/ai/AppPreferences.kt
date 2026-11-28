@@ -9,6 +9,7 @@ object AppPreferences {
     const val INTOLERANCE_ALERTS = "pref.intoleranceAlerts"
     const val WEEKLY_DIGEST = "pref.weeklyDigest"
     const val STRICT_SAFETY_PENALTIES = "pref.strictSafetyPenalties"
+    const val SELECTED_AI_MODE = "pref.selectedAiMode"
 
     private const val FILE = "scantruth_settings"
     private var prefs: SharedPreferences? = null
@@ -22,5 +23,11 @@ object AppPreferences {
 
     fun set(key: String, value: Boolean) {
         prefs?.edit()?.putBoolean(key, value)?.apply()
+    }
+
+    fun string(key: String, default: String): String = prefs?.getString(key, default) ?: default
+
+    fun setString(key: String, value: String) {
+        prefs?.edit()?.putString(key, value)?.apply()
     }
 }

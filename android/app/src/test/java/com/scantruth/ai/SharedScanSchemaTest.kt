@@ -66,11 +66,21 @@ class SharedScanSchemaTest {
         assertEquals("Caution", factors[0]["impactBadge"])
         assertEquals("positive", factors[1]["sentiment"])
 
-        @Suppress("UNCHECKED_CAST")
         val breakdown = fields["ingredientBreakdown"] as List<Map<String, Any>>
         assertEquals("Avoid", breakdown[0]["status"])
         assertEquals("Okay", breakdown[1]["status"])
         assertFalse("A missing note is omitted, not saved as null", breakdown[1].containsKey("note"))
+    }
+
+    @Test
+    fun preservesUnknownStatusInsteadOfMarkingOkay() {
+        val withUnknown = analysis().copy(
+            ingredientBreakdown = listOf(IngredientVerdict("INS 999", VerdictLevel.UNKNOWN, "Unverified"))
+        )
+        val fields = FirestoreRepository.sharedScanFields(withUnknown, emptyList())
+        @Suppress("UNCHECKED_CAST")
+        val breakdown = fields["ingredientBreakdown"] as List<Map<String, Any>>
+        assertEquals("Unknown", breakdown[0]["status"])
     }
 
     @Test
@@ -93,8 +103,11 @@ class SharedScanSchemaTest {
     }
 
     @Test
-    fun namesTheOnDeviceEngine() {
-        val fields = FirestoreRepository.sharedScanFields(analysis(engine = AiEngine.ON_DEVICE), emptyList())
-        assertEquals("Gemini Nano (On-Device)", fields["modelUsed"])
+    fun namesTheOnDeviceAndOfflineEngines() {
+        val nanoFields = FirestoreRepository.sharedScanFields(analysis(engine = AiEngine.ON_DEVICE), emptyList())
+        assertEquals("Gemini Nano (On-Device)", nanoFields["modelUsed"])
+
+        val offlineFields = FirestoreRepository.sharedScanFields(analysis(engine = AiEngine.OFFLINE), emptyList())
+        assertEquals("On-Device Rule Engine (Offline)", offlineFields["modelUsed"])
     }
 }

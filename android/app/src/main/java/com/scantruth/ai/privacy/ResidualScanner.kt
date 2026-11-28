@@ -18,12 +18,24 @@ internal object ResidualScanner {
 
     private const val MAX_ALERTS = 12
 
-    /** Lines that are describing a measurement, not a person. */
+    /** Lines that are describing a measurement, assay, or standard accreditation — not a person. */
     private val CLINICAL_CONTEXT = Regex(
         """(?i)\b(?:hb|haemoglobin|hemoglobin|wbc|rbc|platelets?|creatinine|bilirubin|""" +
-            """cholesterol|triglycerides?|glucose|hba1c|vitamin|tsh|t3|t4|alt|ast|sgpt|sgot|""" +
-            """urea|sodium|potassium|calcium|range|reference|normal|result|mg|g/dl|mmol|""" +
-            """iu/l|ng/ml|u/l|x10|cells|cmm|mm/hr|fasting|postprandial)\b"""
+            """cholesterol|triglycerides?|ldl|hdl|vldl|glucose|hba1c|vitamin|tsh|t3|t4|""" +
+            """alt|ast|alp|ggt|ldh|crp|ferritin|folate|insulin|cortisol|albumin|globulin|""" +
+            """ige|igg|igm|iga|psa|esr|sgpt|sgot|urea|sodium|potassium|calcium|""" +
+            """range|reference|normal|result|mg|g/dl|mg/dl|ug/dl|ug/l|ng/dl|pg/ml|""" +
+            """mmol|umol/l|nmol/l|pmol/l|iu/l|iu/ml|miu/ml|uiu/ml|ng/ml|u/l|u/ml|meq/l|""" +
+            """g/l|k/ul|m/ul|x10|cells|cmm|cumm|mm/hr|copies/ml|fasting|postprandial|""" +
+            """method|assay|analyzer|instrument|elisa|clia|eclia|hplc|iso|nabl|accredited)\b"""
+    )
+
+    private val MONTH_YEAR_CODE = Regex(
+        """^(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|SEPT|OCT|NOV|DEC)[ \-/]?(?:19|20)\d{2}$"""
+    )
+
+    private val HARMLESS_STANDARD_CODE = Regex(
+        """^(?:ISO|CAP|ICD|CPT|CLIA)[ \-/]?\d{4,}$"""
     )
 
     private class Pattern(
@@ -31,7 +43,8 @@ internal object ResidualScanner {
         val severity: AlertSeverity,
         val regex: Regex,
         val title: String,
-        val detail: String
+        val detail: String,
+        val ignoreMatch: (String) -> Boolean = { false }
     )
 
     private val HIGH_RISK: List<Pattern> = listOf(
@@ -102,7 +115,11 @@ internal object ResidualScanner {
             Regex("""\b[A-Z]{2,4}[ \-/]?\d{4,}\b"""),
             "Identifier-shaped code",
             "A letter-and-digit code survived masking. Check whether it identifies you or " +
-                "a visit."
+                "a visit.",
+            ignoreMatch = { matched ->
+                val clean = matched.trim().uppercase()
+                MONTH_YEAR_CODE.matches(clean) || HARMLESS_STANDARD_CODE.matches(clean)
+            }
         ),
         Pattern(
             AlertArea.SUSPICIOUS,
@@ -156,6 +173,8 @@ internal object ResidualScanner {
         into: MutableList<PrivacyAlert>
     ) {
         pattern.regex.findAll(text).forEach { match ->
+            if (isInsideMaskToken(text, match.range.first, match.range.last)) return@forEach
+            if (pattern.ignoreMatch(match.value)) return@forEach
             val lineNumber = lineOf(text, match.range.first)
             if (findClinicalLine) {
                 val line = lineAt(text, match.range.first)
@@ -169,6 +188,15 @@ internal object ResidualScanner {
                 lineNumber = lineNumber
             )
         }
+    }
+
+    private fun isInsideMaskToken(text: String, start: Int, end: Int): Boolean {
+        val openBracket = text.lastIndexOf('[', start)
+        if (openBracket < 0) return false
+        val closeBracket = text.indexOf(']', end)
+        if (closeBracket < 0) return false
+        val between = text.substring(openBracket, closeBracket + 1)
+        return between.matches(Regex("""\[[A-Z_]+_\d+\]"""))
     }
 
     private fun lineAt(text: String, index: Int): String {
